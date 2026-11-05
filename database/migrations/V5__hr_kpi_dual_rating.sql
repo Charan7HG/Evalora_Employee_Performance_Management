@@ -1,0 +1,32 @@
+-- V5__hr_kpi_dual_rating.sql
+--
+-- Corrects the Phase 5D KPI assessment model.
+--
+-- Under the corrected workflow the manager rates EVERY assigned KPI, including
+-- HR-assessed ones. HR then adds its own separate rating to each HR-assessed
+-- KPI. The two ratings are stored in different places:
+--   * manager_assessments.rating  - the manager's rating, for every KPI
+--   * hr_assessments.rating       - HR's rating, for HR-assessed KPIs only
+--   * performance_result_items.manager_rating / hr_rating - frozen copies
+--
+-- An HR-assessed KPI therefore always stores both ratings in a result item.
+-- The frozen manager rating is never null for a KPI that has reached HR
+-- review, and the frozen HR rating is present only for an HR-assessed KPI.
+--
+-- V1 made hr_rating NOT NULL because Phase 5D expected HR to rate every KPI.
+-- A manager KPI no longer carries an HR rating, so the column must accept
+-- NULL. This is the only schema change required; both rating columns and the
+-- existing "at least one rating" check (ck_result_item_stage_rating) remain.
+--
+-- Historical data:
+--   * No row is deleted, rewritten or recalculated.
+--   * Results published before this migration keep the scores they were
+--     published with. In particular, Phase 5D HR-KPI items stored a NULL
+--     manager_rating because managers were not allowed to rate them. Those
+--     rows remain exactly as they are and are displayed as historical
+--     records; they are not retroactively re-scored.
+--   * The check constraint ck_result_item_stage_rating is unaffected: every
+--     existing row already carries at least one rating.
+
+ALTER TABLE performance_result_items
+    ALTER COLUMN hr_rating DROP NOT NULL;

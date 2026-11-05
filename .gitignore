@@ -1,0 +1,33 @@
+# Environment files (real secrets - never commit)
+.env
+.env.*
+*.env
+# The template contains placeholders only and must stay visible.
+!.env.example
+
+# Java / Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+*.log
+
+# Node / React
+node_modules/
+dist/
+build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# Local agent scaffolding (not project assets)
+.freebuff/
+.github/modernize/
+
+# OS
+Thumbs.db
+.DS_Store
