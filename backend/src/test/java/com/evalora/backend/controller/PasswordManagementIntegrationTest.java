@@ -43,7 +43,6 @@ import java.util.concurrent.Future;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -110,7 +109,7 @@ class PasswordManagementIntegrationTest {
     void setUp() {
         tokenRepository.deleteAll();
         userRepository.deleteAll();
-        doNothing().when(emailService).sendOtpEmail(anyString(), isNull(), anyString());
+        doNothing().when(emailService).sendOtpEmail(anyString(), anyString(), anyString());
         employee = userRepository.saveAndFlush(user(EMAIL, Role.EMPLOYEE, true));
     }
 
@@ -237,7 +236,7 @@ class PasswordManagementIntegrationTest {
 
         assertThat(tokenRepository.count()).isZero();
         ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
-        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        verify(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), otpCaptor.capture());
         String otp = otpCaptor.getValue();
         assertThat(otp.matches("\\d{6}")).isTrue();
 

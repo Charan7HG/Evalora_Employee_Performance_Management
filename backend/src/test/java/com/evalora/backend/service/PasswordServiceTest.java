@@ -1,15 +1,18 @@
 package com.evalora.backend.service;
 
 import com.evalora.backend.entity.PasswordResetToken;
+import com.evalora.backend.entity.Employee;
 import com.evalora.backend.entity.User;
 import com.evalora.backend.entity.enums.Role;
 import com.evalora.backend.repository.ActivationTokenRepository;
+import com.evalora.backend.repository.EmployeeRepository;
 import com.evalora.backend.repository.PasswordResetTokenRepository;
 import com.evalora.backend.repository.UserRepository;
 import com.evalora.backend.util.PasswordResetTokenUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -23,7 +26,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -47,6 +49,8 @@ class PasswordServiceTest {
     private static final String NEW_HASH = "$2a$12$9876543210987654321098uABCDEFGHIJKLMNOPQRSTUVWXYZ01234";
 
     private UserRepository userRepository;
+    @Mock
+    private EmployeeRepository employeeRepository;
     private PasswordResetTokenRepository tokenRepository;
     private ActivationTokenRepository activationTokenRepository;
     private PasswordEncoder passwordEncoder;
@@ -56,6 +60,7 @@ class PasswordServiceTest {
     @BeforeEach
     void setUp() {
         userRepository = mock(UserRepository.class);
+        employeeRepository = mock(EmployeeRepository.class);
         tokenRepository = mock(PasswordResetTokenRepository.class);
         activationTokenRepository = mock(ActivationTokenRepository.class);
         passwordEncoder = mock(PasswordEncoder.class);
@@ -65,13 +70,13 @@ class PasswordServiceTest {
                 // Existing tests request several OTPs in a row; the dedicated
                 // cooldown test below constructs a service with the real default.
                 .withProperty("evalora.otp.resend-cooldown", "0");
-        passwordService = new PasswordService(userRepository, tokenRepository,
+        passwordService = new PasswordService(userRepository, employeeRepository, tokenRepository,
                 activationTokenRepository, passwordEncoder, environment, emailService);
     }
 
     @Test
     void constructorRejectsMissingOtpPepperOutsideDevProfile() {
-        assertThatThrownBy(() -> new PasswordService(userRepository, tokenRepository,
+        assertThatThrownBy(() -> new PasswordService(userRepository, employeeRepository, tokenRepository,
                 activationTokenRepository, passwordEncoder, new MockEnvironment(), emailService))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("EVALORA_OTP_PEPPER");
@@ -82,7 +87,7 @@ class PasswordServiceTest {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
 
-        PasswordService service = new PasswordService(userRepository, tokenRepository,
+        PasswordService service = new PasswordService(userRepository, employeeRepository, tokenRepository,
                 activationTokenRepository, passwordEncoder, environment, emailService);
 
         Object pepper = ReflectionTestUtils.getField(service, "otpPepper");
@@ -172,7 +177,7 @@ class PasswordServiceTest {
         verifyNoInteractions(tokenRepository);
 
         ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
-        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        verify(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), otpCaptor.capture());
         String otp = otpCaptor.getValue();
         assertThat(otp.matches("\\d{6}")).isTrue();
 
@@ -218,7 +223,7 @@ class PasswordServiceTest {
         passwordService.forgotPassword(EMAIL);
 
         ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
-        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        verify(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), otpCaptor.capture());
         Map<?, ?> otpCache = (Map<?, ?>) ReflectionTestUtils.getField(passwordService, "otpCache");
         Object otpRecord = otpCache.values().iterator().next();
         ReflectionTestUtils.setField(otpRecord, "expiresAt", OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1));
@@ -239,7 +244,7 @@ class PasswordServiceTest {
 
         assertThat(result.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
         verify(emailService, times(PasswordService.MAX_OTP_REQUESTS))
-                .sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+                .sendOtpEmail(eq(EMAIL), eq("Evalora User"), any(String.class));
         verifyNoInteractions(tokenRepository);
     }
 
@@ -270,7 +275,7 @@ class PasswordServiceTest {
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user()));
         when(emailService.isEmailEnabled()).thenReturn(true);
         doThrow(new EmailDeliveryException("simulated provider failure"))
-                .when(emailService).sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+                .when(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), any(String.class));
 
         ForgotPasswordResult result = passwordService.forgotPassword(EMAIL);
 
@@ -278,7 +283,7 @@ class PasswordServiceTest {
                 new ForgotPasswordResult(PasswordService.FORGOT_PASSWORD_MESSAGE));
 
         ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
-        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        verify(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), otpCaptor.capture());
         assertThat(passwordService.verifyOtp(EMAIL, otpCaptor.getValue()).valid()).isFalse();
 
         Map<?, ?> otpCache = (Map<?, ?>) ReflectionTestUtils.getField(passwordService, "otpCache");
@@ -293,7 +298,7 @@ class PasswordServiceTest {
         when(emailService.isEmailEnabled()).thenReturn(true);
         doThrow(new EmailDeliveryException("simulated provider failure"))
                 .doNothing()
-                .when(emailService).sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+                .when(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), any(String.class));
 
         ForgotPasswordResult failed = service.forgotPassword(EMAIL);
         ForgotPasswordResult retried = service.forgotPassword(EMAIL);
@@ -301,7 +306,7 @@ class PasswordServiceTest {
         assertThat(failed.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
         assertThat(retried.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
         verify(emailService, times(2))
-                .sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+                .sendOtpEmail(eq(EMAIL), eq("Evalora User"), any(String.class));
     }
 
     @Test
@@ -316,7 +321,7 @@ class PasswordServiceTest {
         assertThat(first.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
         assertThat(second.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
         verify(emailService, times(1))
-                .sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+                .sendOtpEmail(eq(EMAIL), eq("Evalora User"), any(String.class));
     }
 
     @Test
@@ -326,7 +331,7 @@ class PasswordServiceTest {
         passwordService.forgotPassword(EMAIL);
 
         ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
-        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        verify(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), otpCaptor.capture());
         String actualOtp = otpCaptor.getValue();
         String incorrectOtp = actualOtp.equals("000000") ? "000001" : "000000";
 
@@ -336,6 +341,34 @@ class PasswordServiceTest {
 
         assertThat(passwordService.verifyOtp(EMAIL, actualOtp).valid()).isFalse();
         verifyNoInteractions(tokenRepository);
+    }
+
+    @Test
+    void otpUsesTheEmployeeProfileFullNameWhenAvailable() {
+        User user = user();
+        Employee profile = new Employee();
+        profile.setFullName("Asha Rao");
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(employeeRepository.findByUser_Id(1L)).thenReturn(Optional.of(profile));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+
+        passwordService.forgotPassword(EMAIL);
+
+        verify(emailService).sendOtpEmail(eq(EMAIL), eq("Asha Rao"), any(String.class));
+    }
+
+    @Test
+    void blankEmployeeProfileNameFallsBackToTheGenericRecipient() {
+        User user = user();
+        Employee profile = new Employee();
+        profile.setFullName("   ");
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(employeeRepository.findByUser_Id(1L)).thenReturn(Optional.of(profile));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+
+        passwordService.forgotPassword(EMAIL);
+
+        verify(emailService).sendOtpEmail(eq(EMAIL), eq("Evalora User"), any(String.class));
     }
 
     // ------------------------------------------------------------- reset password
@@ -465,7 +498,7 @@ class PasswordServiceTest {
         MockEnvironment environment = new MockEnvironment()
                 .withProperty("evalora.otp.pepper", "test-only-otp-pepper-0123456789abcdef")
                 .withProperty("evalora.otp.resend-cooldown", String.valueOf(cooldownSeconds));
-        return new PasswordService(userRepository, tokenRepository,
+        return new PasswordService(userRepository, employeeRepository, tokenRepository,
                 activationTokenRepository, passwordEncoder, environment, emailService);
     }
 

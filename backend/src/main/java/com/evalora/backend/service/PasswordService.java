@@ -59,6 +59,7 @@ public class PasswordService {
     static final String FORGOT_PASSWORD_MESSAGE =
             "If an account with that email exists, password reset instructions have been made available.";
     private final UserRepository userRepository;
+    private final EmployeeRepository employeeRepository;
     private final PasswordResetTokenRepository tokenRepository;
     private final ActivationTokenRepository activationTokenRepository;
     private final PasswordEncoder passwordEncoder;
@@ -67,12 +68,14 @@ public class PasswordService {
     private final EmailService emailService;
 
     public PasswordService(UserRepository userRepository,
+                           EmployeeRepository employeeRepository,
                            PasswordResetTokenRepository tokenRepository,
                            ActivationTokenRepository activationTokenRepository,
                            PasswordEncoder passwordEncoder,
                            Environment environment,
                            EmailService emailService) {
         this.userRepository = userRepository;
+        this.employeeRepository = employeeRepository;
         this.tokenRepository = tokenRepository;
         this.activationTokenRepository = activationTokenRepository;
         this.passwordEncoder = passwordEncoder;
@@ -174,7 +177,7 @@ public class PasswordService {
         otpCache.put(email, otpRecord);
 
         try {
-            sendOtp(user.getEmail(), rawOtp);
+            sendOtp(user, rawOtp);
         } catch (EmailDeliveryException ex) {
             // The code never reached the user. Discard it so an undisclosed OTP
             // cannot be used, and release the cooldown so the user can retry
@@ -493,11 +496,18 @@ public class PasswordService {
     }
 
     /** Send the OTP through the configured email provider. */
-    private void sendOtp(String email, String rawOtp) {
-        if (emailService.isEmailEnabled()) {
-            emailService.sendOtpEmail(email, null, rawOtp);
-        }
+private void sendOtp(User user, String rawOtp) {
+    if (!emailService.isEmailEnabled()) {
+        return;
     }
+
+    String recipientName = employeeRepository.findByUser_Id(user.getId())
+            .map(Employee::getFullName)
+            .filter(name -> name != null && !name.isBlank())
+            .orElse("Evalora User");
+
+    emailService.sendOtpEmail(user.getEmail(), recipientName, rawOtp);
+}
 
     private static int positiveOrDefault(Integer value, int fallback) {
         return value == null || value < 1 ? fallback : value;
