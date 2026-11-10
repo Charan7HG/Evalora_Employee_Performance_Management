@@ -6,6 +6,9 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -29,6 +32,8 @@ public class BrevoEmailService implements EmailService {
 
     private final EmailSettings settings;
     private final RestClient restClient;
+    private static final Logger log =
+        LoggerFactory.getLogger(BrevoEmailService.class);
 
     public BrevoEmailService(Environment environment) {
         this.settings = EmailSettings.from(environment);
@@ -95,10 +100,39 @@ public class BrevoEmailService implements EmailService {
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();
+                } catch (RestClientResponseException ex) {
+            String providerResponse = ex.getResponseBodyAsString();
+
+            // Redact email addresses before writing provider errors to logs.
+            providerResponse = providerResponse.replaceAll(
+                    "(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}",
+                    "[redacted-email]"
+            );
+
+            // Keep log output bounded.
+            if (providerResponse.length() > 500) {
+                providerResponse = providerResponse.substring(0, 500);
+            }
+
+            log.warn(
+                    "Brevo rejected email request. HTTP status: {}. Response: {}",
+                    ex.getStatusCode().value(),
+                    providerResponse
+            );
+
+            throw new EmailDeliveryException(
+                    "Brevo email delivery failed.", ex
+            );
+
         } catch (RestClientException ex) {
-            // The cause is retained for local debugging but callers only log a
-            // generic message, never Brevo's response or the recipient address.
-            throw new EmailDeliveryException("Brevo email delivery failed.", ex);
+            log.warn(
+                    "Brevo email transport failure ({})",
+                    ex.getClass().getSimpleName()
+            );
+
+            throw new EmailDeliveryException(
+                    "Brevo email delivery failed.", ex
+            );
         }
     }
 }
