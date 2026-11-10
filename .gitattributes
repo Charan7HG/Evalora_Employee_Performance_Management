@@ -27,3 +27,6 @@ backend/mvnw text eol=lf
 *.gif binary
 *.ico binary
 *.pdf binary
+
+# Flyway migration files must retain LF line endings
+*.sql text eol=lf
