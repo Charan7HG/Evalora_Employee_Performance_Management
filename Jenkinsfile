@@ -6,7 +6,7 @@
  * =============================================================================
  *
  * Stages:
- *   1. Checkout / local workspace validation
+ *   1. SCM CHECKOUT VALIDATION
  *   2. Frontend lint and tests
  *   3. Frontend production build
  *   4. Backend tests
@@ -34,11 +34,9 @@
 pipeline {
 
     agent {
-        node {
-            label 'built-in'
-            customWorkspace 'C:\\Users\\DELL\\Dev\\PMS'
-        }
+        label 'built-in'
     }
+
 
     tools {
         jdk 'jdk21'
@@ -61,21 +59,13 @@ pipeline {
     stages {
 
         // ================================================================
-        // 1. CHECKOUT / LOCAL WORKSPACE VALIDATION
+        // 1. SCM CHECKOUT VALIDATION
         // ================================================================
 
-        stage('Checkout') {
+       stage('Checkout') {
             steps {
-                dir('C:\\Users\\DELL\\Dev\\PMS') {
-                    script {
-                        if (!fileExists('Jenkinsfile')) {
-                            error('Evalora project directory not found or Jenkinsfile is missing.')
-                        }
-
-                        echo 'Using local Evalora workspace.'
-                        echo "Workspace: ${pwd()}"
-                    }
-                }
+                echo "Building from Jenkins workspace: ${pwd()}"
+                echo "Git commit: ${env.GIT_COMMIT}"
             }
         }
 
@@ -502,19 +492,22 @@ pipeline {
     // POST-BUILD ACTIONS
     // ================================================================
 
+
+        // ================================================================
+    // POST-BUILD ACTIONS
+    // ================================================================
+
     post {
-
         always {
-
             junit(
-                    allowEmptyResults: true,
-                    testResults: 'backend/target/surefire-reports/*.xml'
+                allowEmptyResults: true,
+                testResults: 'backend/target/surefire-reports/*.xml'
             )
 
             archiveArtifacts(
-                    allowEmptyArchive: true,
-                    artifacts: 'frontend/dist/**,backend/target/*.jar',
-                    fingerprint: true
+                allowEmptyArchive: true,
+                artifacts: 'frontend/dist/**,backend/target/*.jar',
+                fingerprint: true
             )
         }
 
