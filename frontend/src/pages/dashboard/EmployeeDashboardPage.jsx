@@ -1,4 +1,5 @@
 import { getEmployeeDashboard } from '../../api/dashboardApi.js'
+import DashboardGreeting from '../../components/DashboardGreeting.jsx'
 import DashboardRequestState from '../../components/DashboardRequestState.jsx'
 import { useDashboardData } from '../../hooks/useDashboardData.js'
 
@@ -82,6 +83,7 @@ export default function EmployeeDashboardPage() {
   return (
     <section aria-labelledby="dashboard-title">
       <p className="dashboard-eyebrow">Employee workspace</p>
+      <DashboardGreeting />
       <h1 id="dashboard-title">Dashboard</h1>
       <p className="dashboard-intro">Your current assessment and published performance result.</p>
       <DashboardRequestState error={error} isLoading={isLoading} onRetry={retry} />

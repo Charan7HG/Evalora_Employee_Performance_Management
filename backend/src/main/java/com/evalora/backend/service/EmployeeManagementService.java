@@ -3,6 +3,7 @@ package com.evalora.backend.service;
 import com.evalora.backend.dto.CreateStaffRequest;
 import com.evalora.backend.dto.StaffResponse;
 import com.evalora.backend.dto.UpdateStaffRequest;
+import com.evalora.backend.entity.ActivationTokenEntity;
 import com.evalora.backend.entity.Employee;
 import com.evalora.backend.entity.EmployeeManagerAssignment;
 import com.evalora.backend.entity.User;
@@ -13,12 +14,23 @@ import com.evalora.backend.exception.HrErrorType;
 import com.evalora.backend.repository.EmployeeManagerAssignmentRepository;
 import com.evalora.backend.repository.EmployeeRepository;
 import com.evalora.backend.repository.UserRepository;
+import com.evalora.backend.repository.ActivationTokenRepository;
 import com.evalora.backend.util.EmailNormalizer;
-import com.evalora.backend.util.PasswordPolicy;
+import com.evalora.backend.util.PasswordResetTokenUtil;
+import com.evalora.backend.util.ActivationLinkBuilder;
+import org.hibernate.exception.ConstraintViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -41,21 +53,40 @@ import java.util.Objects;
 @Service
 public class EmployeeManagementService {
 
+    private static final Logger log = LoggerFactory.getLogger(EmployeeManagementService.class);
+
     private static final int MAX_FULL_NAME_LENGTH = 150;
+
+    private static final String ACTIVATION_DELIVERY_FAILED_MESSAGE =
+            "Activation email could not be delivered. The account is still pending; "
+                    + "try again after checking email delivery.";
 
     private final UserRepository userRepository;
     private final EmployeeRepository employeeRepository;
     private final EmployeeManagerAssignmentRepository assignmentRepository;
     private final PasswordEncoder passwordEncoder;
+    private final ActivationTokenRepository activationTokenRepository;
+    private final EmailService emailService;
+    private final String frontendBaseUrl;
+    private final TransactionTemplate transactionTemplate;
 
-    public EmployeeManagementService(UserRepository userRepository,
-                                     EmployeeRepository employeeRepository,
-                                     EmployeeManagerAssignmentRepository assignmentRepository,
-                                     PasswordEncoder passwordEncoder) {
+public EmployeeManagementService(UserRepository userRepository,
+                                 EmployeeRepository employeeRepository,
+                                 EmployeeManagerAssignmentRepository assignmentRepository,
+                                 PasswordEncoder passwordEncoder,
+                                 ActivationTokenRepository activationTokenRepository,
+                                 EmailService emailService,
+                                 PlatformTransactionManager transactionManager,
+                                 @Value("${evalora.frontend.base-url}") String frontendBaseUrl) {
         this.userRepository = userRepository;
         this.employeeRepository = employeeRepository;
         this.assignmentRepository = assignmentRepository;
         this.passwordEncoder = passwordEncoder;
+        this.activationTokenRepository = activationTokenRepository;
+        this.emailService = emailService;
+        this.frontendBaseUrl = frontendBaseUrl;
+        ActivationLinkBuilder.validateBaseUrl(frontendBaseUrl);
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     // ------------------------------------------------------------------ create
@@ -67,19 +98,17 @@ public class EmployeeManagementService {
 
     @Transactional
     public StaffResponse createManager(CreateStaffRequest request, Long hrUserId) {
-        if (request.managerId() != null) {
-            throw invalid("Managers cannot be assigned a manager in v1.");
-        }
         return create(request, Role.MANAGER, hrUserId);
     }
 
     private StaffResponse create(CreateStaffRequest request, Role role, Long hrUserId) {
+        if (role == Role.MANAGER && request.managerId() != null) {
+            throw invalid("Managers cannot be assigned a manager in v1.");
+        }
+
         String email = EmailNormalizer.normalize(request.email());
         String employeeCode = request.employeeCode().trim();
 
-        if (!PasswordPolicy.isValid(request.initialPassword())) {
-            throw invalid(PasswordPolicy.MESSAGE);
-        }
         if (userRepository.existsByEmailIgnoreCase(email)) {
             throw conflict("An account with this email already exists.");
         }
@@ -103,10 +132,25 @@ public class EmployeeManagementService {
 
         User user = new User();
         user.setEmail(email);
-        user.setPasswordHash(passwordEncoder.encode(request.initialPassword()));
+        // The account is pending activation, so HR never supplies the permanent
+        // password. The column is NOT NULL, so store a BCrypt hash of a random,
+        // never-disclosed value. Login is rejected until the employee activates
+        // the account and chooses their own password (enabled=false).
+        user.setPasswordHash(passwordEncoder.encode(PasswordResetTokenUtil.generate()));
         user.setRole(role);
-        user.setEnabled(true);
+        user.setEnabled(false);
         user = saveUser(user);
+
+        // Generate a cryptographically secure activation token (32 bytes)
+        String rawToken = PasswordResetTokenUtil.generate();
+        String tokenHash = PasswordResetTokenUtil.hash(rawToken);
+
+        // Store the token hash and 24-hour expiry in the activation_tokens table
+        ActivationTokenEntity activationToken = new ActivationTokenEntity();
+        activationToken.setUser(user);
+        activationToken.setTokenHash(tokenHash);
+        activationToken.setExpiresAt(OffsetDateTime.now(ZoneOffset.UTC).plusHours(24));
+        activationTokenRepository.save(activationToken);
 
         Employee employee = new Employee();
         employee.setUser(user);
@@ -122,6 +166,37 @@ public class EmployeeManagementService {
         if (manager != null) {
             openAssignment(employee, manager, hrUserId, now());
         }
+
+        // Schedule activation email to be sent after the DB transaction commits.
+        // This uses Spring's TransactionSynchronization to ensure the email request
+        // happens after the transaction successfully commits, so a failed email
+        // does not roll back the account-creation transaction.
+        if (emailService.isEmailEnabled()) {
+            String activationUrl = ActivationLinkBuilder.build(frontendBaseUrl, rawToken);
+            Long activationUserId = user.getId();
+            String activationRecipient = user.getEmail();
+            String activationRecipientName = employee.getFullName();
+            // Register a synchronization to send the email after commit.
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        emailService.sendActivationEmail(
+                                activationRecipient, activationRecipientName, activationUserId,
+                                activationUrl, "activation");
+                    } catch (EmailDeliveryException ex) {
+                        // The account and its activation token are already committed.
+                        // Never rethrow: that would turn a delivery failure into a
+                        // failed API response after the data was saved.
+                        log.error("Activation email delivery failed for user id {}. The account and "
+                                        + "its pending activation token were kept; use the resend "
+                                        + "action after fixing email delivery.",
+                                activationUserId);
+                    }
+                }
+            });
+        }
+
         return toResponse(employee);
     }
 
@@ -298,6 +373,20 @@ public class EmployeeManagementService {
                 .orElseThrow(() -> notFound(role));
     }
 
+    /**
+     * Activation resend/status are HR operations that apply to both employees
+     * and managers, so they accept either staff role.
+     */
+    private Employee requireStaffProfile(Long profileId) {
+        Employee employee = employeeRepository.findById(profileId)
+                .orElseThrow(() -> notFound(Role.EMPLOYEE));
+        Role role = employee.getUser().getRole();
+        if (role != Role.EMPLOYEE && role != Role.MANAGER) {
+            throw notFound(Role.EMPLOYEE);
+        }
+        return employee;
+    }
+
     private Employee lockProfile(Long profileId, Role role) {
         Employee employee = employeeRepository.findByIdForUpdate(profileId)
                 .orElseThrow(() -> notFound(role));
@@ -329,6 +418,103 @@ public class EmployeeManagementService {
         }
     }
 
+    /**
+     * HR endpoint: resend activation email for a pending employee/manager account.
+     * Previous unused activation tokens are invalidated before sending a new one.
+     * The raw token is not stored in the database; only its hash. The raw token
+     * is included in the activation link sent to the user's email.
+     *
+     * <p>The token rotation is committed first and the email is sent afterwards,
+     * outside the transaction. A delivery failure therefore keeps a usable
+     * pending token and can be retried, while the result reports the real
+     * outcome instead of always claiming that the email was sent.</p>
+     */
+    public ActivationResendResult resendActivationToken(Long employeeId) {
+        boolean emailEnabled = emailService.isEmailEnabled();
+        ResendPreparation preparation = transactionTemplate.execute(
+                status -> prepareActivationResend(employeeId, emailEnabled));
+
+        if (preparation == null) {
+            return new ActivationResendResult(false, false, ACTIVATION_DELIVERY_FAILED_MESSAGE);
+        }
+        if (preparation.alreadyActive()) {
+            return new ActivationResendResult(false, true, "Account is already active.");
+        }
+        if (!preparation.emailEnabled()) {
+            return new ActivationResendResult(false, false,
+                    "Email delivery is disabled. The activation link was not sent.");
+        }
+
+        try {
+            emailService.sendActivationEmail(preparation.email(), preparation.recipientName(),
+                    preparation.userId(), preparation.activationUrl(), "activation");
+            return new ActivationResendResult(true, false, "Activation email sent.");
+        } catch (EmailDeliveryException ex) {
+            log.error("Activation email delivery failed for user id {}. The pending activation "
+                    + "token was kept; HR can retry the resend.", preparation.userId());
+            return new ActivationResendResult(false, false, ACTIVATION_DELIVERY_FAILED_MESSAGE);
+        }
+    }
+
+    private ResendPreparation prepareActivationResend(Long employeeId, boolean emailEnabled) {
+        Employee employee = requireStaffProfile(employeeId);
+        User user = employee.getUser();
+
+        if (user.isEnabled()) {
+            return ResendPreparation.activeAccount();
+        }
+        if (!emailEnabled) {
+            return ResendPreparation.deliveryDisabled();
+        }
+
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        activationTokenRepository.deleteAllByUser_Id(user.getId());
+
+        // Generate a new cryptographically secure activation token (32 bytes)
+        String rawToken = PasswordResetTokenUtil.generate();
+        String tokenHash = PasswordResetTokenUtil.hash(rawToken);
+
+        // Store only the hash in the database; the raw token is never persisted.
+        ActivationTokenEntity activationToken = new ActivationTokenEntity();
+        activationToken.setUser(user);
+        activationToken.setTokenHash(tokenHash);
+        activationToken.setExpiresAt(now.plusHours(24));
+        activationTokenRepository.save(activationToken);
+
+        return new ResendPreparation(false, true, user.getId(), user.getEmail(),
+                employee.getFullName(), ActivationLinkBuilder.build(frontendBaseUrl, rawToken));
+    }
+
+    private record ResendPreparation(boolean alreadyActive, boolean emailEnabled,
+                                     Long userId, String email, String recipientName,
+                                     String activationUrl) {
+
+        static ResendPreparation activeAccount() {
+            return new ResendPreparation(true, true, null, null, null, null);
+        }
+
+        static ResendPreparation deliveryDisabled() {
+            return new ResendPreparation(false, false, null, null, null, null);
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public ActivationStatusResult checkActivationStatus(Long employeeId) {
+        Employee employee = requireStaffProfile(employeeId);
+        User user = employee.getUser();
+        OffsetDateTime now = now();
+        boolean hasPendingToken = !user.isEnabled()
+                && activationTokenRepository.findByUser_Id(user.getId()).stream()
+                .anyMatch(token -> token.getExpiresAt().isAfter(now));
+        return new ActivationStatusResult(hasPendingToken, user.isEnabled(), user.getEmail());
+    }
+
+    public record ActivationResendResult(boolean resent, boolean enabled, String message) {
+    }
+
+    public record ActivationStatusResult(boolean hasPending, boolean enabled, String email) {
+    }
+
     private void closeCurrentAssignments(Long employeeId, OffsetDateTime at) {
         List<EmployeeManagerAssignment> open =
                 assignmentRepository.findByEmployee_IdAndEffectiveToIsNull(employeeId);
@@ -355,8 +541,23 @@ public class EmployeeManagementService {
         try {
             return userRepository.saveAndFlush(user);
         } catch (DataIntegrityViolationException ex) {
-            throw conflict("An account with this email already exists.");
+            if (isEmailUniqueConstraintViolation(ex)) {
+                throw conflict("An account with this email already exists.");
+            }
+            throw ex;
         }
+    }
+
+    private boolean isEmailUniqueConstraintViolation(DataIntegrityViolationException exception) {
+        Throwable cause = exception;
+        while (cause != null) {
+            if (cause instanceof ConstraintViolationException violation
+                    && "ux_users_email_lower".equalsIgnoreCase(violation.getConstraintName())) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
     }
 
     private Employee saveEmployee(Employee employee) {

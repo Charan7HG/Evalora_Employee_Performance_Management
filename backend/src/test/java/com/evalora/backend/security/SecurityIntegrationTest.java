@@ -32,6 +32,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -49,7 +50,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Import(SecurityIntegrationTest.TestEndpoints.class)
 @TestPropertySource(properties = {
-        "spring.datasource.url=jdbc:h2:mem:evalora_security;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"
+        "spring.datasource.url=jdbc:h2:mem:evalora_security;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1",
+        "evalora.frontend.base-url=http://localhost:5173",
+        "evalora.cors.allowed-origins=http://localhost:5173"
 })
 class SecurityIntegrationTest {
 
@@ -77,6 +80,13 @@ class SecurityIntegrationTest {
     }
 
     // ---------------------------------------------------------------- 401 / 403
+
+    @Test
+    void actuatorHealthIsPublicAndReportsUp() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
 
     @Test
     void requestWithoutTokenIsUnauthorized() throws Exception {
@@ -233,6 +243,21 @@ class SecurityIntegrationTest {
 
         assertThat(apiDocs.getResponse().getStatus()).isNotIn(401, 403);
         assertThat(swaggerUi.getResponse().getStatus()).isNotIn(401, 403);
+    }
+
+    @Test
+    void otpVerificationIsPublicWithoutMakingOtherAuthRoutesPublic() throws Exception {
+        mockMvc.perform(post("/api/auth/verify-reset-otp")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"person@example.test\",\"otp\":\"123456\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(false));
+
+        mockMvc.perform(post("/api/auth/change-password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentPassword\":\"x\",\"newPassword\":\"NewPass@2026\","
+                                + "\"confirmPassword\":\"NewPass@2026\"}"))
+                .andExpect(status().isUnauthorized());
     }
 
     // ------------------------------------------------------------------ helpers

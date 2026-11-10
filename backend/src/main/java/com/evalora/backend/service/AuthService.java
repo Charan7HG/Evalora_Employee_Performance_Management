@@ -2,7 +2,9 @@ package com.evalora.backend.service;
 
 import com.evalora.backend.dto.AuthUserResponse;
 import com.evalora.backend.dto.LoginResponse;
+import com.evalora.backend.entity.Employee;
 import com.evalora.backend.entity.User;
+import com.evalora.backend.repository.EmployeeRepository;
 import com.evalora.backend.repository.UserRepository;
 import com.evalora.backend.security.JwtProperties;
 import com.evalora.backend.security.JwtService;
@@ -33,15 +35,18 @@ public class AuthService {
     static final Duration LOCK_DURATION = Duration.ofMinutes(5);
 
     private final UserRepository userRepository;
+    private final EmployeeRepository employeeRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final JwtProperties jwtProperties;
 
     public AuthService(UserRepository userRepository,
+                       EmployeeRepository employeeRepository,
                        PasswordEncoder passwordEncoder,
                        JwtService jwtService,
                        JwtProperties jwtProperties) {
         this.userRepository = userRepository;
+        this.employeeRepository = employeeRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.jwtProperties = jwtProperties;
@@ -90,7 +95,27 @@ public class AuthService {
         long expiresInSeconds = jwtProperties.getExpirationMs() / 1000;
 
         return LoginResult.success(new LoginResponse(
-                token, "Bearer", expiresInSeconds, AuthUserResponse.from(user)));
+                token, "Bearer", expiresInSeconds, toAuthUser(user)));
+    }
+
+    /**
+     * Returns the safe identity of the authenticated account, including the
+     * employee profile name used by dashboard greetings. Returns {@code null}
+     * if the account no longer exists.
+     */
+    @Transactional(readOnly = true)
+    public AuthUserResponse currentUser(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        return userRepository.findById(userId).map(this::toAuthUser).orElse(null);
+    }
+
+    private AuthUserResponse toAuthUser(User user) {
+        String fullName = employeeRepository.findByUser_Id(user.getId())
+                .map(Employee::getFullName)
+                .orElse(null);
+        return AuthUserResponse.from(user, fullName);
     }
 
     private static boolean isLockActive(User user, OffsetDateTime now) {

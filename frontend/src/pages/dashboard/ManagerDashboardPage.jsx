@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { getManagerDashboard } from '../../api/dashboardApi.js'
+import DashboardGreeting from '../../components/DashboardGreeting.jsx'
 import DashboardRequestState from '../../components/DashboardRequestState.jsx'
 import { useDashboardData } from '../../hooks/useDashboardData.js'
 
@@ -45,6 +46,7 @@ export default function ManagerDashboardPage() {
   return (
     <section aria-labelledby="dashboard-title">
       <p className="dashboard-eyebrow">Manager workspace</p>
+      <DashboardGreeting />
       <h1 id="dashboard-title">Dashboard</h1>
       <p className="dashboard-intro">Your current team and assessment workload.</p>
       <DashboardRequestState error={error} isLoading={isLoading} onRetry={retry} />

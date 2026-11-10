@@ -7,6 +7,7 @@ import com.evalora.backend.entity.enums.Role;
 import com.evalora.backend.entity.enums.StaffStatus;
 import com.evalora.backend.exception.HrApiException;
 import com.evalora.backend.exception.HrErrorType;
+import com.evalora.backend.repository.ActivationTokenRepository;
 import com.evalora.backend.repository.EmployeeRepository;
 import com.evalora.backend.repository.EmployeeManagerAssignmentRepository;
 import com.evalora.backend.repository.UserRepository;
@@ -77,6 +78,9 @@ class EmployeeCodeUniquenessMigrationTest {
     private EmployeeManagerAssignmentRepository managerAssignmentRepository;
 
     @Autowired
+    private ActivationTokenRepository activationTokenRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -89,10 +93,10 @@ class EmployeeCodeUniquenessMigrationTest {
     void setUp() {
         managerAssignmentRepository.deleteAll();
         employeeRepository.deleteAll();
+        activationTokenRepository.deleteAll();
         userRepository.deleteAll();
         hrUser = userRepository.saveAndFlush(user("hr.code@evalora.local", Role.HR));
-        managerId = employeeManagementService.createManager(
-                newRequest("MGR-CODE", "manager.code@evalora.local", null), hrUser.getId()).id();
+        managerId = saveActiveManagerFixture();
     }
 
     @Test
@@ -187,7 +191,7 @@ class EmployeeCodeUniquenessMigrationTest {
     private CreateStaffRequest newRequest(String employeeCode, String email, Long managerId) {
         return new CreateStaffRequest(
                 "Case", "Code", email, employeeCode,
-                "Engineering", "Developer", LocalDate.of(2026, 3, 2), PASSWORD, managerId);
+                "Engineering", "Developer", LocalDate.of(2026, 3, 2), managerId);
     }
 
     private void saveProfileDirectly(String employeeCode, String email) {
@@ -198,6 +202,20 @@ class EmployeeCodeUniquenessMigrationTest {
         profile.setFullName("Direct " + employeeCode);
         profile.setStatus(StaffStatus.ACTIVE);
         employeeRepository.saveAndFlush(profile);
+    }
+
+    private Long saveActiveManagerFixture() {
+        User managerUser = userRepository.saveAndFlush(
+                user("manager.code@evalora.local", Role.MANAGER));
+        Employee manager = new Employee();
+        manager.setUser(managerUser);
+        manager.setEmployeeCode("MGR-CODE");
+        manager.setFullName("Case Code");
+        manager.setDepartment("Engineering");
+        manager.setDesignation("Developer");
+        manager.setJoiningDate(LocalDate.of(2026, 3, 2));
+        manager.setStatus(StaffStatus.ACTIVE);
+        return employeeRepository.saveAndFlush(manager).getId();
     }
 
     private User user(String email, Role role) {

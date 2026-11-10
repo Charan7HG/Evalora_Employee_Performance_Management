@@ -376,7 +376,7 @@ describe('HR employee and manager management', () => {
     expect(managerApi.getManager).toHaveBeenCalledWith('31')
   })
 
-  it('validates employee email and password before submitting', async () => {
+  it('validates the employee email before submitting', async () => {
     const user = userEvent.setup()
     renderApp('/hr/employees/new')
 
@@ -384,7 +384,6 @@ describe('HR employee and manager management', () => {
     await user.type(screen.getByLabelText('Last name'), 'Rao')
     await user.type(screen.getByLabelText('Email'), 'invalid')
     await user.type(screen.getByLabelText('Employee code'), 'EMP-022')
-    await user.type(screen.getByLabelText(/^Initial password/), 'weak')
     await user.click(screen.getByRole('button', { name: 'Create employee' }))
 
     expect((await screen.findByRole('alert')).textContent).toContain('valid email address')
@@ -399,7 +398,6 @@ describe('HR employee and manager management', () => {
     await user.type(screen.getByLabelText('Last name'), 'Rao')
     await user.type(screen.getByLabelText('Email'), 'asha@example.test')
     await user.type(screen.getByLabelText('Employee code'), 'EMP-022')
-    await user.type(screen.getByLabelText(/^Initial password/), 'Employee@2026')
     const managerSelect = screen.getByLabelText(/Reporting manager/)
     expect(managerSelect.required).toBe(true)
     expect(managerSelect.value).toBe('')
@@ -484,7 +482,7 @@ describe('HR employee and manager management', () => {
     await user.type(screen.getByLabelText('Last name'), 'Rao')
     await user.type(screen.getByLabelText('Email'), 'asha@example.test')
     await user.type(screen.getByLabelText('Employee code'), 'EMP-022')
-    await user.type(screen.getByLabelText(/^Initial password/), 'Employee@2026')
+    expect(screen.queryByLabelText(/Initial password/)).toBeNull()
     const managerSelect = screen.getByLabelText(/Reporting manager/)
     expect(within(managerSelect).getAllByRole('option')).toHaveLength(2)
     expect(within(managerSelect).queryByRole('option', { name: /Disabled Manager|Employee Option|Mona Boss/ })).toBeNull()
@@ -500,7 +498,6 @@ describe('HR employee and manager management', () => {
       department: null,
       designation: null,
       joiningDate: null,
-      initialPassword: 'Employee@2026',
       managerId: 32,
     })
     expect(employeeApi.assignEmployeeManager).not.toHaveBeenCalled()
@@ -518,7 +515,6 @@ describe('HR employee and manager management', () => {
     await user.type(screen.getByLabelText('Last name'), 'Rao')
     await user.type(screen.getByLabelText('Email'), 'asha@example.test')
     await user.type(screen.getByLabelText('Employee code'), 'EMP-022')
-    await user.type(screen.getByLabelText(/^Initial password/), 'Employee@2026')
     await user.selectOptions(screen.getByLabelText(/Reporting manager/), '32')
     await user.click(screen.getByRole('button', { name: 'Create employee' }))
 
@@ -542,7 +538,6 @@ describe('HR employee and manager management', () => {
     await user.type(screen.getByLabelText('Last name'), 'Rao')
     await user.type(screen.getByLabelText('Email'), 'asha@example.test')
     await user.type(screen.getByLabelText('Employee code'), 'EMP-021')
-    await user.type(screen.getByLabelText(/^Initial password/), 'Employee@2026')
     await user.selectOptions(screen.getByLabelText(/Reporting manager/), '32')
     await user.click(screen.getByRole('button', { name: 'Create employee' }))
 
@@ -574,7 +569,6 @@ describe('HR employee and manager management', () => {
     await user.type(screen.getByLabelText('Last name'), 'Boss')
     await user.type(screen.getByLabelText('Email'), 'mona@example.test')
     await user.type(screen.getByLabelText('Employee code'), 'MGR-031')
-    await user.type(screen.getByLabelText(/^Initial password/), 'Manager@2026')
     await user.click(screen.getByRole('button', { name: 'Create manager' }))
 
     await waitFor(() => expect(managerApi.createManager).toHaveBeenCalledOnce())
@@ -586,7 +580,6 @@ describe('HR employee and manager management', () => {
       department: null,
       designation: null,
       joiningDate: null,
-      initialPassword: 'Manager@2026',
     })
   })
 

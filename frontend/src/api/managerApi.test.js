@@ -41,7 +41,6 @@ describe('manager API', () => {
       department: null,
       designation: 'Lead',
       joiningDate: '2026-02-01',
-      initialPassword: 'Manager@2026',
     }
     const getRequest = captureRequest()
     await createManager(payload)

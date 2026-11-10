@@ -8,6 +8,7 @@ import com.evalora.backend.entity.enums.Role;
 import com.evalora.backend.entity.enums.StaffStatus;
 import com.evalora.backend.exception.HrApiException;
 import com.evalora.backend.exception.HrErrorType;
+import com.evalora.backend.repository.ActivationTokenRepository;
 import com.evalora.backend.repository.EmployeeManagerAssignmentRepository;
 import com.evalora.backend.repository.EmployeeRepository;
 import com.evalora.backend.repository.UserRepository;
@@ -50,8 +51,6 @@ import static org.mockito.Mockito.verify;
 })
 class ManagerAssignmentConcurrencyIntegrationTest {
 
-    private static final String NEW_HIRE_PASSWORD = "NewHire@2026";
-
     @Autowired
     private EmployeeManagementService employeeManagementService;
 
@@ -60,6 +59,9 @@ class ManagerAssignmentConcurrencyIntegrationTest {
 
     @Autowired
     private EmployeeManagerAssignmentRepository assignmentRepository;
+
+    @Autowired
+    private ActivationTokenRepository activationTokenRepository;
 
     @MockitoSpyBean
     private EmployeeRepository employeeRepository;
@@ -81,6 +83,7 @@ class ManagerAssignmentConcurrencyIntegrationTest {
     void setUp() {
         assignmentRepository.deleteAll();
         employeeRepository.deleteAll();
+        activationTokenRepository.deleteAll();
         userRepository.deleteAll();
 
         hrUser = userRepository.saveAndFlush(user("hr.locking@evalora.local", Role.HR));
@@ -222,7 +225,7 @@ class ManagerAssignmentConcurrencyIntegrationTest {
         return new CreateStaffRequest(
                 "New", "Hire", email, employeeCode,
                 "Engineering", "Developer", LocalDate.of(2026, 2, 2),
-                NEW_HIRE_PASSWORD, manager.getId());
+                manager.getId());
     }
 
     private User user(String email, Role role) {

@@ -107,6 +107,15 @@ export function AuthProvider({ children }) {
     }
   }, [clearAuthentication])
 
+  /**
+   * Clears the local session without calling the API. Used after a password
+   * change, because the backend increments the token version and every JWT
+   * issued before the change is rejected from then on.
+   */
+  const signOutLocally = useCallback((message = '') => {
+    clearAuthentication(message)
+  }, [clearAuthentication])
+
   const value = {
     user,
     token,
@@ -114,6 +123,7 @@ export function AuthProvider({ children }) {
     authError,
     signIn,
     signOut,
+    signOutLocally,
     refreshCurrentUser,
   }
 

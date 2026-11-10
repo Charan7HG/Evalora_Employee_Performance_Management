@@ -1,6 +1,7 @@
 package com.evalora.backend.security;
 
 import com.evalora.backend.repository.UserRepository;
+import com.evalora.backend.util.ActivationLinkBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -17,8 +18,11 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import tools.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
 
+import java.net.URI;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -41,12 +45,18 @@ public class SecurityConfig {
      */
     public static final String FRONTEND_ORIGIN = CorsProperties.DEFAULT_FRONTEND_ORIGIN;
 
-    /** Infrastructure endpoints that stay public for local development. */
+    /**
+     * Public infrastructure endpoints. The actuator health endpoint is
+     * deliberately included so Docker and Jenkins can probe the container
+     * without a token; it exposes only {@code {"status":"UP"}}. No other
+     * actuator endpoint is exposed or permitted.
+     */
     private static final String[] PUBLIC_ENDPOINTS = {
             "/v3/api-docs/**",
             "/swagger-ui/**",
             "/swagger-ui.html",
-            "/error"
+            "/error",
+            "/actuator/health"
     };
 
     /**
@@ -57,7 +67,11 @@ public class SecurityConfig {
     private static final String[] PUBLIC_AUTH_ENDPOINTS = {
             "/api/auth/login",
             "/api/auth/forgot-password",
+            "/api/auth/verify-reset-otp",
             "/api/auth/reset-password",
+            // Activation links are opened from an email, before the user has a
+            // token, so this endpoint must be public.
+            "/api/auth/activate-account",
             "/api/auth/dev-reset-password"
     };
 
@@ -87,6 +101,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, PUBLIC_AUTH_ENDPOINTS).permitAll()
                         .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
                         .requestMatchers("/api/hr/**").hasRole("HR")
+                        // Activation resend/status for staff are HR operations,
+                        // even though they live under the auth controller path.
+                        .requestMatchers("/api/auth/hr/**").hasRole("HR")
                         .requestMatchers("/api/employee/**").hasRole("EMPLOYEE")
                         .requestMatchers("/api/manager/**").hasRole("MANAGER")
                         .anyRequest().authenticated())
@@ -115,7 +132,9 @@ public class SecurityConfig {
     }
 
     @Bean
-    public CorsConfigurationSource corsConfigurationSource(CorsProperties corsProperties) {
+    public CorsConfigurationSource corsConfigurationSource(
+            CorsProperties corsProperties,
+            @Value("${evalora.frontend.base-url}") String frontendBaseUrl) {
         List<String> allowedOrigins = corsProperties.getAllowedOrigins().stream()
                 .filter(Objects::nonNull)
                 .map(String::trim)
@@ -129,6 +148,19 @@ public class SecurityConfig {
         if (allowedOrigins.stream().anyMatch(origin -> origin.contains("*"))) {
             throw new IllegalStateException(
                     "evalora.cors.allowed-origins must not contain a wildcard origin.");
+        }
+
+        URI frontend = ActivationLinkBuilder.validateBaseUrl(frontendBaseUrl);
+        String scheme = frontend.getScheme().toLowerCase(Locale.ROOT);
+        String host = frontend.getHost().toLowerCase(Locale.ROOT);
+        int port = frontend.getPort();
+        String frontendOrigin = scheme + "://" + host
+                + (port < 0 || (scheme.equals("http") && port == 80)
+                || (scheme.equals("https") && port == 443) ? "" : ":" + port);
+        if (allowedOrigins.stream().noneMatch(origin -> origin.equalsIgnoreCase(frontendOrigin))) {
+            throw new IllegalStateException(
+                    "evalora.cors.allowed-origins must include the origin from evalora.frontend.base-url: "
+                            + frontendOrigin);
         }
 
         CorsConfiguration configuration = new CorsConfiguration();

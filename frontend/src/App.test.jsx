@@ -14,6 +14,7 @@ import { hasAnyRole, USER_ROLES } from './utils/roles.js'
 
 vi.mock('./api/authApi.js', () => ({
   login: vi.fn(),
+  activateAccount: vi.fn(),
   getCurrentUser: vi.fn(),
   logout: vi.fn(),
   changePassword: vi.fn(),
@@ -26,9 +27,9 @@ vi.mock('./api/dashboardApi.js', () => ({
 }))
 
 const users = {
-  HR: { id: 1, email: 'hr@example.test', role: 'HR' },
-  MANAGER: { id: 2, email: 'manager@example.test', role: 'MANAGER' },
-  EMPLOYEE: { id: 3, email: 'employee@example.test', role: 'EMPLOYEE' },
+  HR: { id: 1, email: 'hr@example.test', role: 'HR', fullName: 'Hana Reed' },
+  MANAGER: { id: 2, email: 'manager@example.test', role: 'MANAGER', fullName: 'Mona Boss' },
+  EMPLOYEE: { id: 3, email: 'employee@example.test', role: 'EMPLOYEE', fullName: 'Asha Rao' },
 }
 
 const dashboardPaths = {
@@ -113,6 +114,7 @@ describe('role-based dashboard routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeTruthy()
     expect(screen.getByText(users[role].email)).toBeTruthy()
+    expect(await screen.findByText(`Hi, ${users[role].fullName}!`)).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Dashboard' }).getAttribute('href'))
       .toBe(ownRolePath)
     await waitFor(() => expect(loadDashboard).toHaveBeenCalledOnce())
@@ -156,6 +158,7 @@ describe('role-based dashboard routes', () => {
       expiresIn: 28800,
       user: users.EMPLOYEE,
     })
+
     renderApp('/login')
 
     await user.type(screen.getByLabelText('Email'), users.EMPLOYEE.email)
@@ -163,11 +166,30 @@ describe('role-based dashboard routes', () => {
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
 
     expect(await screen.findByText('Your current assessment and published performance result.')).toBeTruthy()
+    expect(await screen.findByText('Hi, Asha Rao!')).toBeTruthy()
     expect(authApi.login).toHaveBeenCalledWith({
       email: users.EMPLOYEE.email,
       password: 'secret',
     })
     expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe('new.jwt.token')
+  })
+
+  it('routes activation links through the frontend activation flow', async () => {
+    const user = userEvent.setup()
+    authApi.activateAccount.mockResolvedValue({ message: 'Account activated successfully.' })
+    renderApp('/activate?token=activation-test-value')
+
+    await user.type(await screen.findByLabelText('New password'), 'Valid@2026!')
+    await user.type(screen.getByLabelText('Confirm new password'), 'Valid@2026!')
+    await user.click(screen.getByRole('button', { name: 'Activate account' }))
+
+    expect(await screen.findByText('Account activated successfully.')).toBeTruthy()
+    expect(authApi.activateAccount).toHaveBeenCalledWith({
+      token: 'activation-test-value',
+      newPassword: 'Valid@2026!',
+      confirmPassword: 'Valid@2026!',
+    })
+    expect(screen.getByRole('link', { name: 'Continue to sign in' }).getAttribute('href')).toBe('/login')
   })
 
   it('validates an invalid email before making a login request', async () => {

@@ -6,12 +6,16 @@ import com.evalora.backend.entity.enums.Role;
 import com.evalora.backend.repository.PasswordResetTokenRepository;
 import com.evalora.backend.repository.UserRepository;
 import com.evalora.backend.security.JwtService;
+import com.evalora.backend.service.EmailService;
 import com.evalora.backend.service.PasswordOperationResult;
 import com.evalora.backend.service.PasswordService;
 import com.evalora.backend.util.PasswordResetTokenUtil;
+import com.evalora.backend.dto.VerifyOtpResponse;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,7 +25,9 @@ import org.springframework.http.MediaType;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import tools.jackson.databind.ObjectMapper;
 
@@ -35,6 +41,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -52,7 +63,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "spring.datasource.url=jdbc:h2:mem:evalora_password;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000"
+        "spring.datasource.url=jdbc:h2:mem:evalora_password;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000",
+        "EVALORA_EMAIL_ENABLED=true"
 })
 class PasswordManagementIntegrationTest {
 
@@ -89,12 +101,16 @@ class PasswordManagementIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @MockitoSpyBean
+    private EmailService emailService;
+
     private User employee;
 
     @BeforeEach
     void setUp() {
         tokenRepository.deleteAll();
         userRepository.deleteAll();
+        doNothing().when(emailService).sendOtpEmail(anyString(), isNull(), anyString());
         employee = userRepository.saveAndFlush(user(EMAIL, Role.EMPLOYEE, true));
     }
 
@@ -116,16 +132,41 @@ class PasswordManagementIntegrationTest {
         mockMvc.perform(loginRequest(EMAIL, PASSWORD)).andExpect(status().isUnauthorized());
     }
 
+    @ParameterizedTest
+    @EnumSource(value = Role.class, names = {"HR", "MANAGER", "EMPLOYEE"})
+    void changePasswordWorksForEveryRole(Role role) throws Exception {
+        User user = role == Role.EMPLOYEE
+                ? employee
+                : userRepository.saveAndFlush(user(
+                        "change." + role.name().toLowerCase() + "@evalora.local", role, true));
+        String token = jwtService.generateToken(user);
+
+        mockMvc.perform(changeRequest(token, PASSWORD, NEW_PASSWORD, NEW_PASSWORD))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("Password changed successfully."));
+
+        User reloaded = userRepository.findById(user.getId()).orElseThrow();
+        assertThat(passwordEncoder.matches(NEW_PASSWORD, reloaded.getPasswordHash())).isTrue();
+        assertThat(reloaded.getTokenVersion()).isEqualTo(user.getTokenVersion() + 1);
+    }
+
     @Test
-    void existingJwtRemainsValidAfterAPasswordChange() throws Exception {
+    void existingJwtIsInvalidatedAfterAPasswordChange() throws Exception {
         String token = jwtService.generateToken(employee);
 
         mockMvc.perform(changeRequest(token, PASSWORD, NEW_PASSWORD, NEW_PASSWORD))
                 .andExpect(status().isOk());
 
-        // Stateless JWT limitation, documented in SECURITY_DESIGN.md.
+        // The password change bumps users.token_version, so the token issued
+        // before the change is rejected by JwtAuthenticationFilter.
         mockMvc.perform(get("/api/auth/me")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+
+        // A token issued with the new version still works.
+        String freshToken = jwtService.generateToken(reloadEmployee());
+        mockMvc.perform(get("/api/auth/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + freshToken))
                 .andExpect(status().isOk());
     }
 
@@ -187,29 +228,48 @@ class PasswordManagementIntegrationTest {
     // ------------------------------------------------------------ forgot password
 
     @Test
-    void forgotPasswordForEligibleAccountIsGenericAndStoresOnlyAHash() throws Exception {
-        // H2 stores TIMESTAMPTZ at microsecond precision and rounds, so an
-        // exact nanosecond bound can sit a fraction of a microsecond on either
-        // side of the stored value. A one-second guard band keeps this a real
-        // "expires in about 15 minutes" assertion without depending on
-        // timestamp precision the database never keeps.
-        OffsetDateTime before = OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1);
-
+    void forgotPasswordOtpVerificationAndResetFollowTheTwoStageFlow() throws Exception {
+        long originalTokenVersion = employee.getTokenVersion();
         mockMvc.perform(forgotRequest(EMAIL))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.message").value(FORGOT_MESSAGE))
                 .andExpect(jsonPath("$.resetToken").doesNotExist());
 
-        OffsetDateTime after = OffsetDateTime.now(ZoneOffset.UTC).plusSeconds(1);
+        assertThat(tokenRepository.count()).isZero();
+        ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        String otp = otpCaptor.getValue();
+        assertThat(otp.matches("\\d{6}")).isTrue();
+
+        OffsetDateTime beforeTicket = OffsetDateTime.now(ZoneOffset.UTC);
+        MvcResult verificationResult = mockMvc.perform(verifyOtpRequest(EMAIL, otp))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.valid").value(true))
+                .andReturn();
+        OffsetDateTime afterTicket = OffsetDateTime.now(ZoneOffset.UTC);
+        VerifyOtpResponse verified = objectMapper.readValue(
+                verificationResult.getResponse().getContentAsString(), VerifyOtpResponse.class);
 
         List<PasswordResetToken> tokens = tokenRepository.findAll();
         assertThat(tokens).hasSize(1);
-        PasswordResetToken stored = tokens.getFirst();
-        assertThat(stored.getTokenHash()).hasSize(64).matches("[0-9a-f]{64}");
-        assertThat(stored.getUsedAt()).isNull();
-        assertThat(stored.getExpiresAt())
-                .isAfterOrEqualTo(before.plusMinutes(15))
-                .isBeforeOrEqualTo(after.plusMinutes(15));
+        PasswordResetToken storedTicket = tokens.getFirst();
+        assertThat(storedTicket.getTokenHash())
+                .isEqualTo(PasswordResetTokenUtil.hash(verified.ticket()));
+        assertThat(storedTicket.getUsedAt()).isNull();
+                // PostgreSQL TIMESTAMPTZ stores timestamps at microsecond precision.
+        // Allow 1 microsecond for database rounding at the interval boundaries.
+        assertThat(storedTicket.getExpiresAt())
+                .isAfterOrEqualTo(beforeTicket.plusMinutes(15).minusNanos(1_000))
+                .isBeforeOrEqualTo(afterTicket.plusMinutes(15).plusNanos(1_000));
+
+        mockMvc.perform(resetRequest(verified.ticket(), NEW_PASSWORD, NEW_PASSWORD))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("Password changed successfully."));
+
+        User reloaded = reloadEmployee();
+        assertThat(passwordEncoder.matches(NEW_PASSWORD, reloaded.getPasswordHash())).isTrue();
+        assertThat(reloaded.getTokenVersion()).isEqualTo(originalTokenVersion + 1);
+        assertThat(reloadToken(verified.ticket()).getUsedAt()).isNotNull();
     }
 
     @Test
@@ -423,6 +483,12 @@ class PasswordManagementIntegrationTest {
         return post("/api/auth/forgot-password")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(json(Map.of("email", email)));
+    }
+
+    private MockHttpServletRequestBuilder verifyOtpRequest(String email, String otp) {
+        return post("/api/auth/verify-reset-otp")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json(Map.of("email", email, "otp", otp)));
     }
 
     private MockHttpServletRequestBuilder resetRequest(String token, String newPassword,

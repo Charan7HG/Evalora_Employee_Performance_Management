@@ -1,0 +1,31 @@
+services:
+  backend:
+    environment:
+      SPRING_PROFILES_ACTIVE: e2e-capture,e2e-bootstrap
+      EVALORA_EMAIL_ENABLED: "false"
+      # E2E-only, non-production pepper. This disposable local stack never
+      # handles live accounts and never sends real email. Real deployments
+      # must supply EVALORA_OTP_PEPPER instead of relying on this value.
+      EVALORA_OTP_PEPPER: "evalora-e2e-only-otp-pepper-not-for-production"
+      EVALORA_FRONTEND_URL: http://localhost:15173
+      EVALORA_E2E_HR_EMAIL: ${EVALORA_E2E_HR_EMAIL:?Set EVALORA_E2E_HR_EMAIL in the local Compose env file}
+      EVALORA_E2E_HR_PASSWORD: ${EVALORA_E2E_HR_PASSWORD:?Set EVALORA_E2E_HR_PASSWORD in the local Compose env file}
+      EVALORA_E2E_HR_EMPLOYEE_CODE: ${EVALORA_E2E_HR_EMPLOYEE_CODE:?Set EVALORA_E2E_HR_EMPLOYEE_CODE in the local Compose env file}
+      EVALORA_E2E_HR_FULL_NAME: ${EVALORA_E2E_HR_FULL_NAME:?Set EVALORA_E2E_HR_FULL_NAME in the local Compose env file}
+      EVALORA_E2E_CAPTURE_DIRECTORY: /tmp/evalora-capture/messages
+    tmpfs:
+      - /tmp/evalora-capture:rw,noexec,nosuid,size=1m,mode=1777
+    ports: !override
+      - "18080:8080"
+
+  frontend:
+    ports: !override
+      - "15173:80"
+
+volumes:
+  postgres_data:
+    name: ${EVALORA_E2E_POSTGRES_VOLUME:?Set a unique disposable EVALORA_E2E_POSTGRES_VOLUME}
+
+networks:
+  default:
+    name: ${EVALORA_E2E_NETWORK:?Set a unique isolated EVALORA_E2E_NETWORK}

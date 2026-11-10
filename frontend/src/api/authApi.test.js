@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import axios, { AxiosError } from 'axios'
 import apiClient, { getApiErrorMessage } from './axiosInstance.js'
-import { changePassword, devResetPassword, getCurrentUser, login, logout } from './authApi.js'
+import {
+  changePassword,
+  devResetPassword,
+  activateAccount,
+  forgotPassword,
+  getCurrentUser,
+  login,
+  logout,
+  resetPassword,
+  verifyResetOtp,
+} from './authApi.js'
 import { TOKEN_STORAGE_KEY } from './tokenStorage.js'
 
 const initialAdapter = apiClient.defaults.adapter
@@ -92,6 +102,7 @@ describe('authentication API client', () => {
       requests.push(config)
       return { data: { message: 'ok' } }
     })
+
     localStorage.setItem(TOKEN_STORAGE_KEY, 'stored.jwt')
 
     await logout()
@@ -109,6 +120,60 @@ describe('authentication API client', () => {
     expect(requests[1].headers.get('Authorization')).toBe('Bearer stored.jwt')
     expect(JSON.parse(requests[1].data)).toEqual({
       currentPassword: 'Old!23456',
+      newPassword: 'New!23456',
+      confirmPassword: 'New!23456',
+    })
+  })
+
+  it('posts the activation token and chosen password to the state-changing backend endpoint', async () => {
+    let request
+    setAdapter((config) => {
+      request = config
+      return { data: { message: 'Account activated successfully.' } }
+    })
+
+    await activateAccount({
+      token: 'activation-test-value',
+      newPassword: 'Valid@2026!',
+      confirmPassword: 'Valid@2026!',
+    })
+
+    expect(request.method).toBe('post')
+    expect(request.url).toBe('/auth/activate-account')
+    expect(JSON.parse(request.data)).toEqual({
+      token: 'activation-test-value',
+      newPassword: 'Valid@2026!',
+      confirmPassword: 'Valid@2026!',
+    })
+  })
+
+  it('posts forgot-password, OTP verification and reset-password DTOs in the correct order', async () => {
+    const requests = []
+    setAdapter((config) => {
+      requests.push(config)
+      return { data: { message: 'OK' } }
+    })
+
+    await forgotPassword({ email: 'person@example.test' })
+    await verifyResetOtp({ email: 'person@example.test', otp: '123456' })
+    await resetPassword({
+      token: 'reset-ticket',
+      newPassword: 'New!23456',
+      confirmPassword: 'New!23456',
+    })
+
+    expect(requests.map(({ method, url }) => [method, url])).toEqual([
+      ['post', '/auth/forgot-password'],
+      ['post', '/auth/verify-reset-otp'],
+      ['post', '/auth/reset-password'],
+    ])
+    expect(JSON.parse(requests[0].data)).toEqual({ email: 'person@example.test' })
+    expect(JSON.parse(requests[1].data)).toEqual({
+      email: 'person@example.test',
+      otp: '123456',
+    })
+    expect(JSON.parse(requests[2].data)).toEqual({
+      token: 'reset-ticket',
       newPassword: 'New!23456',
       confirmPassword: 'New!23456',
     })

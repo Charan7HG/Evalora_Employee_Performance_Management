@@ -39,9 +39,6 @@ public record CreateStaffRequest(
 
         LocalDate joiningDate,
 
-        @NotBlank(message = "Initial password is required.")
-        String initialPassword,
-
         Long managerId) {
 
     /**

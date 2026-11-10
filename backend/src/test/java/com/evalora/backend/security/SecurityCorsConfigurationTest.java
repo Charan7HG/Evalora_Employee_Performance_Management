@@ -20,7 +20,7 @@ class SecurityCorsConfigurationTest {
 
     @Test
     void defaultConfigurationAllowsTheLocalFrontend() {
-        CorsConfiguration cors = corsFor(new CorsProperties());
+        CorsConfiguration cors = corsFor(new CorsProperties(), "http://localhost:5173");
 
         assertThat(cors.getAllowedOrigins())
                 .containsExactly(CorsProperties.DEFAULT_FRONTEND_ORIGIN);
@@ -34,7 +34,7 @@ class SecurityCorsConfigurationTest {
                 " https://evalora.example.com ",
                 "https://admin.evalora.example.com"));
 
-        CorsConfiguration cors = corsFor(properties);
+        CorsConfiguration cors = corsFor(properties, "https://evalora.example.com");
 
         assertThat(cors.getAllowedOrigins()).containsExactly(
                 "https://evalora.example.com",
@@ -46,7 +46,7 @@ class SecurityCorsConfigurationTest {
         CorsProperties properties = new CorsProperties();
         properties.setAllowedOrigins(List.of("*"));
 
-        assertThatThrownBy(() -> corsFor(properties))
+        assertThatThrownBy(() -> corsFor(properties, "http://localhost:5173"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("wildcard");
     }
@@ -56,7 +56,7 @@ class SecurityCorsConfigurationTest {
         CorsProperties properties = new CorsProperties();
         properties.setAllowedOrigins(List.of("https://*.example.com"));
 
-        assertThatThrownBy(() -> corsFor(properties))
+        assertThatThrownBy(() -> corsFor(properties, "http://localhost:5173"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("wildcard");
     }
@@ -66,14 +66,21 @@ class SecurityCorsConfigurationTest {
         CorsProperties properties = new CorsProperties();
         properties.setAllowedOrigins(List.of("  ", ""));
 
-        assertThatThrownBy(() -> corsFor(properties))
+        assertThatThrownBy(() -> corsFor(properties, "http://localhost:5173"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("at least one");
     }
 
-    private CorsConfiguration corsFor(CorsProperties properties) {
+    @Test
+    void frontendOriginMustBeAllowedByCors() {
+        assertThatThrownBy(() -> corsFor(new CorsProperties(), "https://frontend.example.com"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must include the origin");
+    }
+
+    private CorsConfiguration corsFor(CorsProperties properties, String frontendBaseUrl) {
         UrlBasedCorsConfigurationSource source = (UrlBasedCorsConfigurationSource)
-                securityConfig.corsConfigurationSource(properties);
+                securityConfig.corsConfigurationSource(properties, frontendBaseUrl);
         MockHttpServletRequest request = new MockHttpServletRequest("OPTIONS", "/api/auth/login");
         return source.getCorsConfiguration(request);
     }

@@ -22,15 +22,20 @@ PostgreSQL stores all data, and Flyway owns the schema so application code never
 ### Main capabilities
 
 - Stateless JWT authentication with database-backed role and account-status checks.
-- HR staff management: create, update, deactivate, and reactivate employees and managers, with append-only reporting-line history.
+- HR staff management: create, update, deactivate, and reactivate employees and managers, with append-only reporting-line history. **New accounts are created pending activation; HR receives an activation email.**
+- **Employee/manager email onboarding**: HR submits details → account created with `enabled=false` → activation email sent → user sets own password via single-use link → account becomes enabled.
 - KPI catalogue with KPI types and assignment to performance cycles.
 - Performance cycle lifecycle: draft, publish, in progress, completed, and results published.
 - Employee self-assessment, manager assessment, HR assessment, and final scoring.
 - Role-specific dashboards with workflow counters and current-cycle information.
 - Published results with frozen KPI snapshots and persisted scores.
 - Swagger / OpenAPI documentation for the REST API.
-- Versioned PostgreSQL schema migrations (Flyway `V1`–`V5`).
+- Versioned PostgreSQL schema migrations (Flyway `V1`-`V7`).
 - Configurable CORS allow-list, environment-driven configuration, and separate local/production Spring profiles.
+- Forgot password with a 6-digit OTP delivered by the configured email provider (Gmail SMTP in production, Brevo when the `gmail` profile is off). Same generic response for unknown, disabled, and existing accounts.
+- Password reset after OTP verification.
+- Change password for authenticated accounts.
+- JWT session invalidation after password change or reset (token versioning).
 
 ---
 
@@ -101,7 +106,7 @@ PMS/
 │   ├── .env.example
 │   └── src/                      Pages, components, API clients, tests
 ├── database/
-│   └── migrations/               Flyway V1–V5 SQL (canonical schema)
+│   └── migrations/               Flyway V1–V7 SQL (canonical schema)
 ├── docs/                         Setup, API, security, database, scoring and deployment docs
 ├── .env.example                  Local environment template (placeholders only)
 ├── .gitignore
@@ -177,8 +182,25 @@ The backend loads the repository-root `.env` through
 | `EVALORA_BOOTSTRAP_HR_EMPLOYEE_CODE` | No | Defaults to `HR-001` |
 | `EVALORA_BOOTSTRAP_HR_FULL_NAME` | No | Defaults to `HR Administrator` |
 | `EVALORA_CORS_ALLOWED_ORIGINS` | No | Comma-separated browser origins; defaults to `http://localhost:5173` |
+| `EVALORA_FRONTEND_URL` | No | Origin used in emailed activation links; defaults to `http://localhost:5173`. Must be reachable from the device that opens the email (see [Testing from a phone](#testing-from-a-phone-lan)). |
 | `MIGRATIONS_LOCATION` | No | Full Flyway location override, e.g. `classpath:db/migration` |
 | `PORT` | No | HTTP port; defaults to `8080` |
+| `EVALORA_EMAIL_ENABLED` | No | Set to `true` to enable the configured email provider. Default: `false`. |
+| `EVALORA_SMTP_HOST` | Gmail profile | Gmail SMTP host; defaults to `smtp.gmail.com`. |
+| `EVALORA_SMTP_PORT` | Gmail profile | Gmail SMTP port; defaults to `587` (STARTTLS). |
+| `EVALORA_SMTP_USERNAME` | Gmail profile | Gmail account that sends notifications. |
+| `EVALORA_SMTP_PASSWORD` | Gmail profile | Google App Password for that account. Never the account password. |
+| `BREVO_API_KEY` | Only for `prod` without `gmail` | Brevo API key. Kept for deployments that remove the `gmail` profile. |
+| `EVALORA_MAIL_FROM_ADDRESS` | Yes (when email enabled) | Sender email address. For Gmail it must match the authenticated account. |
+| `EVALORA_MAIL_FROM_NAME` | No | Sender display name; defaults to `Evalora`. |
+| `EVALORA_OTP_PEPPER` | Yes outside `dev` | Secret pepper for HMAC-SHA256 OTP hashing. The backend refuses to start when it is empty in any non-`dev` profile. Under `dev` it may be omitted; a random per-process pepper is used instead, so OTPs do not survive a restart. |
+| `EVALORA_OTP_MAX_ATTEMPTS` | No | Maximum OTP requests per email per 15-minute window; defaults to `5`. |
+| `EVALORA_OTP_RESEND_COOLDOWN` | No | Resend cooldown in seconds; defaults to `60`. |
+
+Production Docker Compose activates `prod,gmail`, so Gmail SMTP is the email provider. Use `prod` alone to keep
+Brevo, and `e2e-capture` for the file-capture provider used by E2E tests. Gmail requires a Google App Password
+(https://myaccount.google.com/apppasswords), not the normal account password; the SMTP connection uses STARTTLS on
+port 587. Email delivery failures are reported to the caller and never silently fall back to another provider.
 
 Generate a local JWT secret (do not reuse it anywhere else):
 
@@ -250,6 +272,26 @@ npm run dev
 Open the URL printed by Vite (normally `http://localhost:5173`). The backend allows that origin by default through
 `EVALORA_CORS_ALLOWED_ORIGINS`. Sign-in requires a real account; no demo credentials are provided.
 
+### Testing from a phone (LAN)
+
+New employees receive an activation email whose link is built from `EVALORA_FRONTEND_URL`. `localhost` only works on the
+laptop that runs the stack; on a phone it points at the phone itself. For a quick same-Wi-Fi test:
+
+1. Find the laptop's IPv4 address with `ipconfig`.
+2. Set both origins to that address in the root `.env`:
+   ```dotenv
+   EVALORA_FRONTEND_URL=http://192.168.x.x:5173
+   EVALORA_CORS_ALLOWED_ORIGINS=http://192.168.x.x:5173
+   ```
+3. Start Vite so it listens on the LAN: `npm run dev -- --host`.
+4. If Windows Defender Firewall prompts, allow Node.js on **Private** networks (or add an inbound TCP 5173 rule). Do not
+   expose the port to public networks.
+
+For real deployments use the public HTTPS frontend origin instead of a LAN address, and configure SPF/DKIM/DMARC for the
+sending domain so activation and reset emails are delivered. See
+[`docs/DEPLOYMENT_CONFIGURATION.md`](docs/DEPLOYMENT_CONFIGURATION.md#31-activation-links-and-testing-from-a-phone-lan)
+for details.
+
 ---
 
 ## 4. Test and build commands
@@ -273,6 +315,19 @@ npm run build                   # production bundle in dist/
 
 The frontend build does not run tests or lint, so CI should run all three commands explicitly.
 
+### Jenkins CI
+
+The root `Jenkinsfile` runs the same checks on every build:
+
+1. Backend `./mvnw -B clean verify` (H2 tests, no PostgreSQL required).
+2. Frontend `npm ci`, `npm run lint`, `npm test`, `npm run build`.
+3. Backend and frontend Docker image builds, only after validation passes.
+
+The pipeline does not deploy or push images and never needs Brevo credentials, because CI uses the
+`evalora.email.enabled=false` path. The PostgreSQL migration test is skipped unless `EVALORA_MIGRATION_TEST_URL` (plus
+`EVALORA_MIGRATION_TEST_USERNAME` and `EVALORA_MIGRATION_TEST_PASSWORD`) is configured on the Jenkins agent; the
+pipeline reports explicitly whether it ran or was skipped, so a skip is never presented as a pass.
+
 ---
 
 ## 5. API documentation (Swagger / OpenAPI)
@@ -281,7 +336,8 @@ The backend exposes springdoc-openapi endpoints (public, no token required for t
 
 - Swagger UI: `http://localhost:8080/swagger-ui.html` (also `/swagger-ui/index.html`)
 - OpenAPI JSON: `http://localhost:8080/v3/api-docs`
-- Health check: `http://localhost:8080/actuator/health`
+- Health check: `http://localhost:8080/actuator/health` (public, no token required; this is the probe used by the
+  container health check and by CI)
 
 To call protected endpoints from Swagger UI:
 
@@ -302,7 +358,9 @@ Evalora is environment-driven and has no committed production secrets. A deploym
 | `SPRING_PROFILES_ACTIVE` | A non-`dev` value such as `prod` (disables the dev bootstrap and dev reset endpoint) |
 | `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` | The deployed PostgreSQL connection details |
 | `JWT_SECRET` | A fresh per-environment secret of at least 32 bytes |
+| `EVALORA_OTP_PEPPER` | A fresh per-environment secret for OTP hashing; startup fails without it outside `dev` |
 | `EVALORA_CORS_ALLOWED_ORIGINS` | The deployed frontend origin(s), comma-separated |
+| `EVALORA_FRONTEND_URL` | The public HTTPS frontend origin used in emailed activation links (never `localhost` or a LAN address in production) |
 | `MIGRATIONS_LOCATION` | `classpath:db/migration`, or an absolute `filesystem:` path |
 | `PORT` | Supplied by the hosting platform when required; defaults to `8080` |
 | `VITE_API_BASE_URL` | Frontend build-time API root |
@@ -311,8 +369,8 @@ The jar packages the migrations, so the default container setup can use `classpa
 if a configured Flyway location is missing.
 
 See [`docs/DEPLOYMENT_CONFIGURATION.md`](docs/DEPLOYMENT_CONFIGURATION.md) for the complete contract and the requirements
-for Docker, Jenkins/CI, and Render. Deployment files (Dockerfile, Jenkinsfile, Render manifest) are not yet part of the
-repository.
+for Docker, Jenkins/CI, and Render. The repository now includes the backend and frontend Dockerfiles, the Compose stack,
+and a root `Jenkinsfile`; no Render manifest is checked in.
 
 ---
 

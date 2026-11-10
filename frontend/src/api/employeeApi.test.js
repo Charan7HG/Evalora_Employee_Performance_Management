@@ -42,7 +42,6 @@ describe('employee API', () => {
       department: 'Engineering',
       designation: 'Developer',
       joiningDate: '2026-01-05',
-      initialPassword: 'Employee@2026',
       managerId: 7,
     }
     const getRequest = captureRequest()
@@ -62,7 +61,6 @@ describe('employee API', () => {
       department: null,
       designation: null,
       joiningDate: null,
-      initialPassword: 'Employee@2026',
     }
     const getRequest = captureRequest()
     await createEmployee(payload)

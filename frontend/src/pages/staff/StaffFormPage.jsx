@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { getApiErrorMessage } from '../../api/axiosInstance.js'
 import ManagementRequestState from '../../components/ManagementRequestState.jsx'
 import { useApiResource } from '../../hooks/useApiResource.js'
-import PasswordField from '../../components/PasswordField.jsx'
 
 const EMPTY_FORM = {
   firstName: '',
@@ -13,7 +12,6 @@ const EMPTY_FORM = {
   department: '',
   designation: '',
   joiningDate: '',
-  initialPassword: '',
   managerId: '',
 }
 
@@ -62,9 +60,6 @@ function validateForm(form, isEditing, managerRequired = false) {
     if (!form.nameSplitVerified) {
       return 'Verify or correct the first and last name split before saving.'
     }
-  }
-  if (!isEditing && !/^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z0-9\s]).{8,}$/.test(form.initialPassword)) {
-    return 'Password must be at least 8 characters and contain a letter, a number and a special character.'
   }
   return ''
 }
@@ -160,9 +155,11 @@ export default function StaffFormPage({
       setErrorMessage(validationMessage)
       return
     }
-    if (isEmployeeCreate && !managers.some((manager) => String(manager.id) === form.managerId)) {
-      setErrorMessage('Select an active reporting manager from the available list.')
-      return
+    if (!isEditing) {
+      if (isEmployeeCreate && !managers.some((manager) => String(manager.id) === form.managerId)) {
+        setErrorMessage('Select an active reporting manager from the available list.')
+        return
+      }
     }
 
     const payload = {
@@ -175,13 +172,8 @@ export default function StaffFormPage({
       joiningDate: form.joiningDate || null,
     }
     if (!isEditing) {
-      if (resource === 'employees') {
-        payload.initialPassword = form.initialPassword
-        if (form.managerId) {
-          payload.managerId = Number(form.managerId)
-        }
-      } else {
-        payload.initialPassword = form.initialPassword
+      if (resource === 'employees' && form.managerId) {
+        payload.managerId = Number(form.managerId)
       }
     }
 
@@ -271,18 +263,6 @@ export default function StaffFormPage({
               Joining date
               <input name="joiningDate" type="date" value={form.joiningDate} onChange={updateField} />
             </label>
-            {!isEditing && (
-              <PasswordField
-                id="initialPassword"
-                name="initialPassword"
-                label="Initial password"
-                autoComplete="new-password"
-                value={form.initialPassword}
-                onChange={updateField}
-                required
-                hint="At least 8 characters with a letter, number and special character."
-              />
-            )}
             {!isEditing && resource === 'employees' && (
               <label>
                 Reporting manager <span aria-hidden="true">*</span>
@@ -324,6 +304,12 @@ export default function StaffFormPage({
               {isSaving ? 'Saving…' : isEditing ? 'Save changes' : `Create ${title.slice(0, -1).toLowerCase()}`}
             </button>
           </div>
+          {!isEditing && (
+            <p className="field-hint">
+              Evalora emails an activation link so the new account holder chooses their own password.
+              HR never sets or sees the permanent password.
+            </p>
+          )}
         </form>
       )}
     </section>

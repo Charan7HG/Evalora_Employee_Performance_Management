@@ -1,0 +1,30 @@
+# =============================================================================
+# Docker build-context exclusions (repository root)
+#
+# Used when building from the repository root, as required by the backend
+# Dockerfile (backend/pom.xml packages ../database/migrations).
+#
+# This file affects Docker build contexts only; it has no effect on Git.
+# =============================================================================
+
+# Git metadata (keep .gitignore available because it is not excluded here).
+.git
+
+# Environment files and secrets, at any depth.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Dependencies and generated build output, at any depth.
+node_modules
+**/node_modules
+**/dist
+**/target
+
+# Editor and local OS files.
+.idea
+.vscode
+**/*.log
+Thumbs.db
+.DS_Store

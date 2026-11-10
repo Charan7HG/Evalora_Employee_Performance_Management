@@ -1,0 +1,29 @@
+# =============================================================================
+# Evalora - Git line-ending and binary-file policy
+#
+# Text files are normalized to LF inside the repository so a Linux CI agent
+# (Jenkins) and a Windows developer checkout behave the same way.
+# =============================================================================
+
+# Let Git detect text files and normalize them to LF in the index.
+* text=auto
+
+# Windows-only entry points keep CRLF in the working tree.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Unix scripts and the Maven wrapper must stay LF so they remain executable
+# on Linux. The executable bit itself is stored in the Git index.
+*.sh text eol=lf
+mvnw text eol=lf
+backend/mvnw text eol=lf
+
+# Binary assets are never normalized.
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary

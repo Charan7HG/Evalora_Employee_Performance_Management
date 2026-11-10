@@ -5,10 +5,62 @@
 This document describes the security layer that already exists: stateless JWT authentication, login, failed-login
 tracking, account lockout, current-user retrieval, stateless logout, change / forgot / reset password, HR-only
 staff, KPI and performance-cycle management, employee self-assessment, manager assessment, HR assessment and final
-score generation, HR result publication, role-scoped published-result viewing, and read-only role-specific dashboards. It deliberately contains **no
-public registration, no HR-creation API, no ADMIN role, or email sending**.
+score generation, HR result publication, role-scoped published-result viewing, and read-only role-specific dashboards.
+It deliberately contains **no public registration, no HR-creation API, no ADMIN role, or email sending**.
 
 ---
+This document has been updated to include the new features from Phases 5C-5F:
+- Employee/manager email onboarding with activation tokens
+- Forgot password with 6-digit OTP via Brevo
+- Change password with JWT token version invalidation
+- JWT session invalidation via token versioning
+- Brevo transactional email API integration
+
+---
+
+## 1. Scope of this phase
+
+| Implemented | Not implemented (later phases) |
+|---|---|
+| Stateless `SecurityFilterChain` | Public registration |
+| BCrypt strength 12 encoder | HR account creation through an API |
+| JWT creation and parsing (HS256) | `ADMIN` role |
+| JWT authentication filter | JWT refresh tokens |
+| JSON 401 / 403 responses | Token blacklist / revocation table |
+| CORS for `http://localhost:5173` | Frontend, email sending |
+| Email normalisation utility | SMTP / provider SDK |
+| `POST /api/auth/login` | |
+| Five-attempt / five-minute account lockout | |
+| `GET /api/auth/me` | |
+| `POST /api/auth/logout` (stateless) | |
+| `PUT /api/auth/change-password` | |
+| `POST /api/auth/forgot-password` (OTP) | |
+| `POST /api/auth/verify-reset-otp` | |
+| `POST /api/auth/reset-password` | |
+| HR-only `/api/hr/**` staff management | Frontend integration |
+| HR-only `/api/hr/kpis` KPI management | |
+| HR-only `/api/hr/cycles` cycle, roster and publication management | |
+| HR-only `/api/hr/assessments` HR review and finalization | |
+| HR-only `/api/hr/results` queue and individual/bulk publication | |
+| HR-only `/api/hr/dashboard` organization counts | |
+| Final score/result generation at HR submission (DRAFT only) | |
+| Employee-only `/api/employee/**` self-assessment | |
+| Employee-only published own results | |
+| Employee-only `/api/employee/dashboard` own cycle and published result summary | |
+| Manager-only `/api/manager/**` manager assessment | |
+| Manager-only published results for assignment-snapshot reports | |
+| Manager-only `/api/manager/dashboard` current team and historical workload | |
+| Dev-only HR bootstrap seeder | |
+| Account activation via single-use token | |
+| OTP-based forgot password flow | |
+| Password reset after OTP verification | |
+| JWT token version invalidation after password changes | |
+| Brevo transactional email API | |
+
+Every endpoint that is not explicitly public requires authentication. The public endpoints are
+`POST /api/auth/login`, `POST /api/auth/forgot-password` and `POST /api/auth/reset-password`. `/api/hr/**` additionally
+requires `ROLE_HR`, `/api/employee/**` requires `ROLE_EMPLOYEE`, and `/api/manager/**` requires `ROLE_MANAGER`. There
+is no public registration and no in-memory or default user.
 
 ## 1. Scope of this phase
 

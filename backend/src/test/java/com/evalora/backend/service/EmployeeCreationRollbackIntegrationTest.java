@@ -74,7 +74,7 @@ class EmployeeCreationRollbackIntegrationTest {
 
         CreateStaffRequest request = new CreateStaffRequest(
                 "Roll", "Back", EMAIL, "EMP-ROLLBACK",
-                "Engineering", "Developer", LocalDate.of(2026, 1, 5), PASSWORD, null);
+                "Engineering", "Developer", LocalDate.of(2026, 1, 5), null);
 
         assertThatThrownBy(() -> employeeManagementService.createEmployee(request, hrUser.getId()))
                 .isInstanceOf(HrApiException.class);

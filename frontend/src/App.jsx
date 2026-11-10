@@ -8,6 +8,7 @@ import DashboardLayout from './components/DashboardLayout.jsx'
 import { useAuth } from './context/useAuth.js'
 import AccessDeniedPage from './pages/AccessDeniedPage.jsx'
 import ChangePasswordPage from './pages/auth/ChangePasswordPage.jsx'
+import ActivateAccountPage from './pages/auth/ActivateAccountPage.jsx'
 import ForgotPasswordPage from './pages/auth/ForgotPasswordPage.jsx'
 import ResetPasswordPage from './pages/auth/ResetPasswordPage.jsx'
 import HrResultBrowsePage from './pages/results/HrResultBrowsePage.jsx'
@@ -92,6 +93,7 @@ function RoleDashboardRoute({ role, children }) {
 export function AppRoutes() {
   return (
     <Routes>
+      <Route path="/activate" element={<ActivateAccountPage />} />
       <Route
         path="/login"
         element={

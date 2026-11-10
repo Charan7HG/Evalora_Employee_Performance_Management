@@ -60,4 +60,7 @@ public class User extends BaseEntity {
 
     @Column(name = "last_login_at")
     private OffsetDateTime lastLoginAt;
+
+    @Column(name = "token_version", nullable = false)
+    private long tokenVersion = 1;
 }

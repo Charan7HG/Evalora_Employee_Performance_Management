@@ -49,6 +49,9 @@ export default function LoginPage() {
   const [lockout, setLockout] = useState(readStoredLockout)
   const [remainingSeconds, setRemainingSeconds] = useState(() =>
     (lockout ? secondsUntil(lockout.untilEpochMs) : 0))
+  const [passwordChangedMessage] = useState(
+    () => window.sessionStorage.getItem('evalora.login.success-message') || '',
+  )
 
   useEffect(() => {
     if (!lockout) {
@@ -68,11 +71,15 @@ export default function LoginPage() {
   }, [lockout])
 
   const lockedOut = Boolean(lockout) && remainingSeconds > 0
-  const successMessage = location.state?.successMessage || ''
+  const successMessage = location.state?.successMessage || passwordChangedMessage
   const requestedPath = location.state?.from?.pathname
   const destination = requestedPath?.startsWith('/') && !requestedPath.startsWith('//')
     ? requestedPath
     : '/app'
+
+  useEffect(() => {
+    window.sessionStorage.removeItem('evalora.login.success-message')
+  }, [])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -148,7 +155,7 @@ export default function LoginPage() {
         )}
 
         {!errorMessage && !authError && successMessage && (
-          <div className="form-message" role="status">{successMessage}</div>
+          <div className="form-message form-message-success" role="status">{successMessage}</div>
         )}
 
         {lockedOut && (

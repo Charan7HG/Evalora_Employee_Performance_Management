@@ -13,6 +13,10 @@ vi.mock('../../api/authApi.js', () => ({
   getCurrentUser: vi.fn(),
   logout: vi.fn(),
   changePassword: vi.fn(),
+  forgotPassword: vi.fn(),
+  verifyResetOtp: vi.fn(),
+  resetPassword: vi.fn(),
+  resendOtp: vi.fn(),
   devResetPassword: vi.fn(),
 }))
 
@@ -42,32 +46,68 @@ describe('password recovery flow', () => {
     vi.useRealTimers()
   })
 
-  it('opens a clean password change form from the login page', async () => {
+  it('opens the email-entry form from the login page', async () => {
     const user = userEvent.setup()
     renderApp('/login')
 
     await user.click(await screen.findByRole('link', { name: 'Forgot Password?' }))
 
+    expect(await screen.findByRole('heading', { name: 'Send OTP Email' })).toBeTruthy()
+    expect(screen.getByLabelText('Email')).toBeTruthy()
+    expect(screen.queryByLabelText('New Password')).toBeNull()
+    expect(screen.queryByLabelText('Confirm Password')).toBeNull()
+  })
+
+  it('sends an OTP and then verifies it before allowing password reset', async () => {
+    const user = userEvent.setup()
+    authApi.forgotPassword.mockResolvedValue({ message: 'OTP sent.' })
+    authApi.verifyResetOtp.mockResolvedValue({
+      valid: true,
+      ticket: 'reset-ticket-123',
+      message: 'OTP verified. Please set your new password.',
+    })
+
+    renderApp('/forgot-password')
+
+    await user.type(screen.getByLabelText('Email'), 'person@example.test')
+    await user.click(screen.getByRole('button', { name: 'Send OTP' }))
+
+    expect(authApi.forgotPassword).toHaveBeenCalledWith({ email: 'person@example.test' })
+    expect(await screen.findByRole('heading', { name: 'Verify OTP' })).toBeTruthy()
+
+    await user.type(screen.getByLabelText('OTP Code'), '123456')
+    await user.click(screen.getByRole('button', { name: 'Verify OTP' }))
+
+    expect(authApi.verifyResetOtp).toHaveBeenCalledWith({
+      email: 'person@example.test',
+      otp: '123456',
+    })
     expect(await screen.findByRole('heading', { name: 'Set New Password' })).toBeTruthy()
-    expect(screen.getByLabelText('New Password')).toBeTruthy()
-    expect(screen.getByLabelText('Confirm Password')).toBeTruthy()
-    expect(screen.getByText('Enter and confirm your new password.')).toBeTruthy()
-    expect(screen.queryByText(/development|local account|evalora\.dev-reset|no email|reset link/i)).toBeNull()
-    expect(screen.queryByLabelText('Email')).toBeNull()
-    expect(screen.getAllByRole('button', { name: 'Show password' })).toHaveLength(2)
   })
 
   it('rejects mismatched passwords before calling the backend', async () => {
     const user = userEvent.setup()
+    authApi.forgotPassword.mockResolvedValue({ message: 'OTP sent.' })
+    authApi.verifyResetOtp.mockResolvedValue({
+      valid: true,
+      ticket: 'reset-ticket-123',
+      message: 'OTP verified. Please set your new password.',
+    })
+
     renderApp('/forgot-password')
 
-    await user.type(screen.getByLabelText('New Password'), 'N3w-Pass!')
+    await user.type(screen.getByLabelText('Email'), 'person@example.test')
+    await user.click(screen.getByRole('button', { name: 'Send OTP' }))
+    await user.type(screen.getByLabelText('OTP Code'), '123456')
+    await user.click(screen.getByRole('button', { name: 'Verify OTP' }))
+
+    await user.type(await screen.findByLabelText('New Password'), 'N3w-Pass!')
     await user.type(screen.getByLabelText('Confirm Password'), 'Different1!')
     await user.click(screen.getByRole('button', { name: 'Change Password' }))
 
     expect((await screen.findByRole('alert')).textContent)
       .toContain('New password and confirmation do not match.')
-    expect(authApi.devResetPassword).not.toHaveBeenCalled()
+    expect(authApi.resetPassword).not.toHaveBeenCalled()
   })
 
   it('supports standard Tab and Shift+Tab field navigation', async () => {
@@ -75,72 +115,132 @@ describe('password recovery flow', () => {
     renderApp('/forgot-password')
 
     await user.tab()
-    expect(document.activeElement).toBe(screen.getByLabelText('New Password'))
+    expect(document.activeElement).toBe(screen.getByLabelText('Email'))
     await user.tab()
     await user.tab()
-    expect(document.activeElement).toBe(screen.getByLabelText('Confirm Password'))
-    await user.tab({ shift: true })
-    await user.tab({ shift: true })
-    expect(document.activeElement).toBe(screen.getByLabelText('New Password'))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Send OTP' }))
   })
 
   it('rejects a password that breaks the policy before calling the backend', async () => {
     const user = userEvent.setup()
+    authApi.forgotPassword.mockResolvedValue({ message: 'OTP sent.' })
+    authApi.verifyResetOtp.mockResolvedValue({
+      valid: true,
+      ticket: 'reset-ticket-123',
+      message: 'OTP verified. Please set your new password.',
+    })
+
     renderApp('/forgot-password')
 
-    await user.type(screen.getByLabelText('New Password'), 'short')
+    await user.type(screen.getByLabelText('Email'), 'person@example.test')
+    await user.click(screen.getByRole('button', { name: 'Send OTP' }))
+    await user.type(screen.getByLabelText('OTP Code'), '123456')
+    await user.click(screen.getByRole('button', { name: 'Verify OTP' }))
+
+    await user.type(await screen.findByLabelText('New Password'), 'short')
     await user.type(screen.getByLabelText('Confirm Password'), 'short')
     await user.click(screen.getByRole('button', { name: 'Change Password' }))
 
     expect((await screen.findByRole('alert')).textContent)
       .toContain('Password must be at least 8 characters long')
-    expect(authApi.devResetPassword).not.toHaveBeenCalled()
+    expect(authApi.resetPassword).not.toHaveBeenCalled()
   })
 
-  it('resets the configured account directly and shows the success on login', async () => {
+  it('resets the password with the verified ticket and shows the success on login', async () => {
     const user = userEvent.setup()
-    authApi.devResetPassword.mockResolvedValue({
+    authApi.forgotPassword.mockResolvedValue({ message: 'OTP sent.' })
+    authApi.verifyResetOtp.mockResolvedValue({
+      valid: true,
+      ticket: 'reset-ticket-123',
+      message: 'OTP verified. Please set your new password.',
+    })
+    authApi.resetPassword.mockResolvedValue({
       message: 'Password changed successfully.',
     })
+
     renderApp('/forgot-password')
 
-    await user.type(screen.getByLabelText('New Password'), 'N3w-Pass!')
+    await user.type(screen.getByLabelText('Email'), 'person@example.test')
+    await user.click(screen.getByRole('button', { name: 'Send OTP' }))
+    await user.type(screen.getByLabelText('OTP Code'), '123456')
+    await user.click(screen.getByRole('button', { name: 'Verify OTP' }))
+
+    await user.type(await screen.findByLabelText('New Password'), 'N3w-Pass!')
     await user.type(screen.getByLabelText('Confirm Password'), 'N3w-Pass!')
     await user.click(screen.getByRole('button', { name: 'Change Password' }))
 
-    expect(await screen.findByRole('heading', { name: 'Welcome to Evalora' })).toBeTruthy()
-    expect(await screen.findByText('Password changed successfully.')).toBeTruthy()
-    expect(authApi.devResetPassword).toHaveBeenCalledWith({
+    const success = await screen.findByText('Password changed successfully.')
+    expect(success.className).toContain('form-message-success')
+    expect(authApi.resetPassword).toHaveBeenCalledWith({
+      token: 'reset-ticket-123',
       newPassword: 'N3w-Pass!',
       confirmPassword: 'N3w-Pass!',
     })
-    expect(authApi.devResetPassword).toHaveBeenCalledOnce()
+    expect(authApi.resetPassword).toHaveBeenCalledOnce()
   })
 
   it('reports a backend failure without clearing the typed password', async () => {
     const user = userEvent.setup()
-    authApi.devResetPassword.mockRejectedValue({
+    authApi.forgotPassword.mockResolvedValue({ message: 'OTP sent.' })
+    authApi.verifyResetOtp.mockResolvedValue({
+      valid: true,
+      ticket: 'reset-ticket-123',
+      message: 'OTP verified. Please set your new password.',
+    })
+    authApi.resetPassword.mockRejectedValue({
       response: {
         status: 400,
-        data: { message: 'Development password reset is not configured for this account.' },
+        data: { message: 'The reset ticket is invalid or has expired.' },
       },
     })
+
     renderApp('/forgot-password')
 
-    await user.type(screen.getByLabelText('New Password'), 'N3w-Pass!')
+    await user.type(screen.getByLabelText('Email'), 'person@example.test')
+    await user.click(screen.getByRole('button', { name: 'Send OTP' }))
+    await user.type(screen.getByLabelText('OTP Code'), '123456')
+    await user.click(screen.getByRole('button', { name: 'Verify OTP' }))
+
+    await user.type(await screen.findByLabelText('New Password'), 'N3w-Pass!')
     await user.type(screen.getByLabelText('Confirm Password'), 'N3w-Pass!')
     await user.click(screen.getByRole('button', { name: 'Change Password' }))
 
     expect((await screen.findByRole('alert')).textContent)
-      .toContain('Password change is currently unavailable')
+      .toContain('The reset ticket is invalid or has expired.')
+    expect(screen.getByRole('alert').className).toContain('form-message')
+    expect(screen.getByRole('alert').className).not.toContain('form-message-success')
+    expect(screen.queryByText('Password changed successfully.')).toBeNull()
     expect(screen.getByLabelText('New Password').value).toBe('N3w-Pass!')
   })
 
-  it('redirects the retired token-based reset URL to the direct form', async () => {
+  it('shows an invalid or expired OTP in red without advancing', async () => {
+    const user = userEvent.setup()
+    authApi.forgotPassword.mockResolvedValue({ message: 'OTP sent.' })
+    authApi.verifyResetOtp.mockResolvedValue({
+      valid: false,
+      message: 'Invalid or expired OTP.',
+    })
+
+    renderApp('/forgot-password')
+
+    await user.type(screen.getByLabelText('Email'), 'person@example.test')
+    await user.click(screen.getByRole('button', { name: 'Send OTP' }))
+    await user.type(screen.getByLabelText('OTP Code'), '000000')
+    await user.click(screen.getByRole('button', { name: 'Verify OTP' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('Invalid or expired OTP.')
+    expect(alert.className).toContain('form-message')
+    expect(alert.className).not.toContain('form-message-success')
+    expect(screen.getByRole('heading', { name: 'Verify OTP' })).toBeTruthy()
+    expect(screen.queryByText('Password changed successfully.')).toBeNull()
+  })
+
+  it('redirects the retired token-based reset URL to the OTP flow', async () => {
     renderApp('/reset-password?token=old-token')
 
-    expect(await screen.findByRole('heading', { name: 'Set New Password' })).toBeTruthy()
-    expect(screen.queryByLabelText('Email')).toBeNull()
+    expect(await screen.findByRole('heading', { name: 'Send OTP Email' })).toBeTruthy()
+    expect(screen.getByLabelText('Email')).toBeTruthy()
   })
 })
 

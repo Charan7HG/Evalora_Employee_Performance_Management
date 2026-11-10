@@ -4,6 +4,7 @@
 *.env
 # The template contains placeholders only and must stay visible.
 !.env.example
+!deploy/.env.docker.example
 
 # Java / Maven
 target/
@@ -31,3 +32,22 @@ build/
 # OS
 Thumbs.db
 .DS_Store
+
+# Generated verification output (local test/lint/build logs)
+test-output*.txt
+*-output*.txt
+
+# Test and build tooling caches
+coverage/
+.nyc_output/
+.eslintcache
+*.tsbuildinfo
+
+# Local private keys and certificates (never commit)
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk

@@ -31,6 +31,11 @@ public class JwtService {
 
     public static final String ROLE_CLAIM = "role";
 
+    /** Claim carrying the user's token version at issue time. */
+    public static final String TOKEN_VERSION_CLAIM = "ver";
+
+    private static final long DEFAULT_TOKEN_VERSION = 1L;
+
     private static final int MIN_SECRET_BYTES = 32;
 
     private final SecretKey signingKey;
@@ -53,6 +58,14 @@ public class JwtService {
      * @param role  the role at the time of issue (informational only)
      */
     public String generateToken(String email, Role role) {
+        return buildToken(email, role, DEFAULT_TOKEN_VERSION);
+    }
+
+    public String generateToken(User user) {
+        return buildToken(user.getEmail(), user.getRole(), user.getTokenVersion());
+    }
+
+    private String buildToken(String email, Role role, long tokenVersion) {
         if (role == null) {
             throw new IllegalArgumentException("A role is required to create a token.");
         }
@@ -60,14 +73,11 @@ public class JwtService {
         return Jwts.builder()
                 .subject(EmailNormalizer.normalize(email))
                 .claim(ROLE_CLAIM, role.name())
+                .claim(TOKEN_VERSION_CLAIM, tokenVersion)
                 .issuedAt(Date.from(issuedAt))
                 .expiration(Date.from(issuedAt.plusMillis(expirationMs)))
                 .signWith(signingKey, Jwts.SIG.HS256)
                 .compact();
-    }
-
-    public String generateToken(User user) {
-        return generateToken(user.getEmail(), user.getRole());
     }
 
     /**
@@ -87,6 +97,16 @@ public class JwtService {
     public Role extractRole(String token) {
         String role = parseClaims(token).get(ROLE_CLAIM, String.class);
         return role == null ? null : Role.valueOf(role);
+    }
+
+    /**
+     * Token version at issue time. Tokens created before the version claim
+     * existed are treated as version 1, which keeps them valid only until the
+     * first password change bumps the account version.
+     */
+    public long extractTokenVersion(String token) {
+        Object raw = parseClaims(token).get(TOKEN_VERSION_CLAIM);
+        return raw instanceof Number number ? number.longValue() : DEFAULT_TOKEN_VERSION;
     }
 
     public Instant extractExpiration(String token) {

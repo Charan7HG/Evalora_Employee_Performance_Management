@@ -3,6 +3,7 @@ package com.evalora.backend.service;
 import com.evalora.backend.entity.PasswordResetToken;
 import com.evalora.backend.entity.User;
 import com.evalora.backend.entity.enums.Role;
+import com.evalora.backend.repository.ActivationTokenRepository;
 import com.evalora.backend.repository.PasswordResetTokenRepository;
 import com.evalora.backend.repository.UserRepository;
 import com.evalora.backend.util.PasswordResetTokenUtil;
@@ -11,19 +12,26 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 
 /**
  * Unit tests for password change, forgot-password and reset-password. No Spring
@@ -40,16 +48,46 @@ class PasswordServiceTest {
 
     private UserRepository userRepository;
     private PasswordResetTokenRepository tokenRepository;
+    private ActivationTokenRepository activationTokenRepository;
     private PasswordEncoder passwordEncoder;
+    private EmailService emailService;
     private PasswordService passwordService;
 
     @BeforeEach
     void setUp() {
         userRepository = mock(UserRepository.class);
         tokenRepository = mock(PasswordResetTokenRepository.class);
+        activationTokenRepository = mock(ActivationTokenRepository.class);
         passwordEncoder = mock(PasswordEncoder.class);
-        passwordService = new PasswordService(userRepository, tokenRepository, passwordEncoder,
-                new MockEnvironment());
+        emailService = mock(EmailService.class);
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("evalora.otp.pepper", "test-only-otp-pepper-0123456789abcdef")
+                // Existing tests request several OTPs in a row; the dedicated
+                // cooldown test below constructs a service with the real default.
+                .withProperty("evalora.otp.resend-cooldown", "0");
+        passwordService = new PasswordService(userRepository, tokenRepository,
+                activationTokenRepository, passwordEncoder, environment, emailService);
+    }
+
+    @Test
+    void constructorRejectsMissingOtpPepperOutsideDevProfile() {
+        assertThatThrownBy(() -> new PasswordService(userRepository, tokenRepository,
+                activationTokenRepository, passwordEncoder, new MockEnvironment(), emailService))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("EVALORA_OTP_PEPPER");
+    }
+
+    @Test
+    void constructorUsesEphemeralPepperInDevProfile() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+
+        PasswordService service = new PasswordService(userRepository, tokenRepository,
+                activationTokenRepository, passwordEncoder, environment, emailService);
+
+        Object pepper = ReflectionTestUtils.getField(service, "otpPepper");
+        assertThat(pepper).isInstanceOf(String.class);
+        assertThat((String) pepper).isNotBlank().hasSize(64);
     }
 
     // ------------------------------------------------------------ change password
@@ -67,7 +105,10 @@ class PasswordServiceTest {
 
         assertThat(result).isEqualTo(PasswordOperationResult.SUCCESS);
         assertThat(user.getPasswordHash()).isEqualTo(NEW_HASH);
+        assertThat(user.getTokenVersion()).isEqualTo(2);
         verify(userRepository).save(user);
+        verify(tokenRepository).invalidateAllUnusedForUser(eq(1L), any(OffsetDateTime.class));
+        verify(activationTokenRepository).deleteAllByUser_Id(1L);
     }
 
     @Test
@@ -118,49 +159,88 @@ class PasswordServiceTest {
     // ------------------------------------------------------------ forgot password
 
     @Test
-    void forgotPasswordStoresOnlyTheHashAndAQualifiedExpiry() {
+    void forgotPasswordThenOtpVerificationCreatesOnlyAHashedTicket() {
         User user = user();
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(user));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+        when(passwordEncoder.encode(NEW)).thenReturn(NEW_HASH);
 
-        OffsetDateTime before = OffsetDateTime.now(ZoneOffset.UTC);
         ForgotPasswordResult result = passwordService.forgotPassword("  EMPLOYEE@Evalora.Local  ");
+
+        assertThat(result).isEqualTo(new ForgotPasswordResult(PasswordService.FORGOT_PASSWORD_MESSAGE));
+        verifyNoInteractions(tokenRepository);
+
+        ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        String otp = otpCaptor.getValue();
+        assertThat(otp.matches("\\d{6}")).isTrue();
+
+        assertThat(passwordService.verifyOtp(EMAIL, "000000").valid()).isFalse();
+        OffsetDateTime before = OffsetDateTime.now(ZoneOffset.UTC);
+        VerifyOtpResult verified = passwordService.verifyOtp(EMAIL, otp);
         OffsetDateTime after = OffsetDateTime.now(ZoneOffset.UTC);
+        assertThat(verified.valid()).isTrue();
 
-        ArgumentCaptor<PasswordResetToken> captor =
+        ArgumentCaptor<PasswordResetToken> ticketCaptor =
                 ArgumentCaptor.forClass(PasswordResetToken.class);
-        verify(tokenRepository).save(captor.capture());
-        PasswordResetToken stored = captor.getValue();
-
-        assertThat(result.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
-        assertThat(result.resetToken()).isNull();
-        assertThat(stored.getTokenHash()).hasSize(64);
-        assertThat(stored.getUsedAt()).isNull();
-        assertThat(stored.getExpiresAt())
+        verify(tokenRepository).save(ticketCaptor.capture());
+        PasswordResetToken ticket = ticketCaptor.getValue();
+        ticket.setId(10L);
+        assertThat(ticket.getTokenHash()).isEqualTo(PasswordResetTokenUtil.hash(verified.ticket()));
+        assertThat(ticket.getUsedAt()).isNull();
+        assertThat(ticket.getExpiresAt())
                 .isAfterOrEqualTo(before.plusMinutes(15))
                 .isBeforeOrEqualTo(after.plusMinutes(15));
-        verify(tokenRepository).invalidateAllUnusedForUser(eq(1L), any(OffsetDateTime.class));
+        assertThat(passwordService.verifyOtp(EMAIL, otp).valid()).isFalse();
+        verify(tokenRepository, times(1)).save(any(PasswordResetToken.class));
+
+        when(tokenRepository.findUserIdByTokenHash(ticket.getTokenHash())).thenReturn(Optional.of(1L));
+        when(tokenRepository.findByTokenHashForUpdate(ticket.getTokenHash())).thenReturn(Optional.of(ticket));
+        PasswordOperationResult reset = passwordService.resetPassword(verified.ticket(), NEW, NEW);
+
+        assertThat(reset).isEqualTo(PasswordOperationResult.SUCCESS);
+        assertThat(user.getPasswordHash()).isEqualTo(NEW_HASH);
+        assertThat(user.getTokenVersion()).isEqualTo(2);
+        assertThat(ticket.getUsedAt()).isNotNull();
+        verify(userRepository).save(user);
+        verify(tokenRepository).invalidateOtherUnusedForUser(
+                eq(1L), eq(10L), any(OffsetDateTime.class));
+        verify(activationTokenRepository).deleteAllByUser_Id(1L);
     }
 
     @Test
-    void devProfileReturnsTheRawTokenAndStoresItsHashOnly() {
-        MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("dev");
-        PasswordService devService = new PasswordService(
-                userRepository, tokenRepository, passwordEncoder, environment);
-
+    void expiredOtpCannotIssueAResetTicket() {
         User user = user();
         when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(emailService.isEmailEnabled()).thenReturn(true);
 
-        ForgotPasswordResult result = devService.forgotPassword(EMAIL);
+        passwordService.forgotPassword(EMAIL);
 
-        ArgumentCaptor<PasswordResetToken> captor =
-                ArgumentCaptor.forClass(PasswordResetToken.class);
-        verify(tokenRepository).save(captor.capture());
+        ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        Map<?, ?> otpCache = (Map<?, ?>) ReflectionTestUtils.getField(passwordService, "otpCache");
+        Object otpRecord = otpCache.values().iterator().next();
+        ReflectionTestUtils.setField(otpRecord, "expiresAt", OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1));
 
-        assertThat(result.resetToken()).isNotBlank().hasSize(64);
-        assertThat(captor.getValue().getTokenHash())
-                .isEqualTo(PasswordResetTokenUtil.hash(result.resetToken()))
-                .isNotEqualTo(result.resetToken());
+        assertThat(passwordService.verifyOtp(EMAIL, otpCaptor.getValue()).valid()).isFalse();
+        verifyNoInteractions(tokenRepository);
+    }
+
+    @Test
+    void forgotPasswordLimitsOtpRequests() {
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user()));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+
+        ForgotPasswordResult result = null;
+        for (int request = 0; request < PasswordService.MAX_OTP_REQUESTS + 1; request++) {
+            result = passwordService.forgotPassword(EMAIL);
+        }
+
+        assertThat(result.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
+        verify(emailService, times(PasswordService.MAX_OTP_REQUESTS))
+                .sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+        verifyNoInteractions(tokenRepository);
     }
 
     @Test
@@ -170,7 +250,6 @@ class PasswordServiceTest {
         ForgotPasswordResult result = passwordService.forgotPassword(EMAIL);
 
         assertThat(result.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
-        assertThat(result.resetToken()).isNull();
         verifyNoInteractions(tokenRepository);
     }
 
@@ -183,7 +262,79 @@ class PasswordServiceTest {
         ForgotPasswordResult result = passwordService.forgotPassword(EMAIL);
 
         assertThat(result.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
-        assertThat(result.resetToken()).isNull();
+        verifyNoInteractions(tokenRepository);
+    }
+
+    @Test
+    void otpDeliveryFailureDiscardsTheOtpAndKeepsTheResponseGeneric() {
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user()));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+        doThrow(new EmailDeliveryException("simulated provider failure"))
+                .when(emailService).sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+
+        ForgotPasswordResult result = passwordService.forgotPassword(EMAIL);
+
+        assertThat(result).isEqualTo(
+                new ForgotPasswordResult(PasswordService.FORGOT_PASSWORD_MESSAGE));
+
+        ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        assertThat(passwordService.verifyOtp(EMAIL, otpCaptor.getValue()).valid()).isFalse();
+
+        Map<?, ?> otpCache = (Map<?, ?>) ReflectionTestUtils.getField(passwordService, "otpCache");
+        assertThat(otpCache).isEmpty();
+        verifyNoInteractions(tokenRepository);
+    }
+
+    @Test
+    void aFailedDeliveryDoesNotStartTheResendCooldown() {
+        PasswordService service = serviceWithCooldownSeconds(60);
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user()));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+        doThrow(new EmailDeliveryException("simulated provider failure"))
+                .doNothing()
+                .when(emailService).sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+
+        ForgotPasswordResult failed = service.forgotPassword(EMAIL);
+        ForgotPasswordResult retried = service.forgotPassword(EMAIL);
+
+        assertThat(failed.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
+        assertThat(retried.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
+        verify(emailService, times(2))
+                .sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+    }
+
+    @Test
+    void resendCooldownBlocksAnImmediateSecondRequest() {
+        PasswordService service = serviceWithCooldownSeconds(60);
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user()));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+
+        ForgotPasswordResult first = service.forgotPassword(EMAIL);
+        ForgotPasswordResult second = service.forgotPassword(EMAIL);
+
+        assertThat(first.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
+        assertThat(second.message()).isEqualTo(PasswordService.FORGOT_PASSWORD_MESSAGE);
+        verify(emailService, times(1))
+                .sendOtpEmail(eq(EMAIL), isNull(), any(String.class));
+    }
+
+    @Test
+    void incorrectOtpAttemptsInvalidateTheCodeAfterTheConfiguredLimit() {
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user()));
+        when(emailService.isEmailEnabled()).thenReturn(true);
+        passwordService.forgotPassword(EMAIL);
+
+        ArgumentCaptor<String> otpCaptor = ArgumentCaptor.forClass(String.class);
+        verify(emailService).sendOtpEmail(eq(EMAIL), isNull(), otpCaptor.capture());
+        String actualOtp = otpCaptor.getValue();
+        String incorrectOtp = actualOtp.equals("000000") ? "000001" : "000000";
+
+        for (int attempt = 0; attempt < PasswordService.MAX_OTP_VERIFICATION_ATTEMPTS; attempt++) {
+            assertThat(passwordService.verifyOtp(EMAIL, incorrectOtp).valid()).isFalse();
+        }
+
+        assertThat(passwordService.verifyOtp(EMAIL, actualOtp).valid()).isFalse();
         verifyNoInteractions(tokenRepository);
     }
 
@@ -309,6 +460,14 @@ class PasswordServiceTest {
     }
 
     // ------------------------------------------------------------------- helpers
+
+    private PasswordService serviceWithCooldownSeconds(int cooldownSeconds) {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("evalora.otp.pepper", "test-only-otp-pepper-0123456789abcdef")
+                .withProperty("evalora.otp.resend-cooldown", String.valueOf(cooldownSeconds));
+        return new PasswordService(userRepository, tokenRepository,
+                activationTokenRepository, passwordEncoder, environment, emailService);
+    }
 
     private void stubTokenLookup(User user, PasswordResetToken token) {
         when(tokenRepository.findUserIdByTokenHash(token.getTokenHash()))

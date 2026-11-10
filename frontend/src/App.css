@@ -257,6 +257,12 @@
   font-size: 14px;
 }
 
+.form-message-success {
+  border-color: #b7dfc8;
+  color: #17603d;
+  background: #f1fbf5;
+}
+
 .text-button {
   margin: -4px 0 12px;
   border: 0;
@@ -443,6 +449,13 @@
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.dashboard-greeting {
+  margin: 0 0 6px;
+  color: #1d568b;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .dashboard-content h1,

@@ -1,0 +1,30 @@
+# =============================================================================
+# Evalora frontend - Docker build-context exclusions
+#
+# The frontend image only needs source, package manifests, and nginx.conf.
+# Keeping local dependencies and output out of the context makes CI builds
+# faster and prevents local secrets or stale bundles from entering the image.
+# =============================================================================
+
+node_modules
+dist
+build
+coverage
+.nyc_output
+
+# Local environment files (templates are not needed inside the image).
+.env
+.env.*
+*.local
+
+# Tool caches and logs
+.eslintcache
+*.tsbuildinfo
+*.log
+npm-debug.log*
+
+# Editor and OS metadata
+.idea
+.vscode
+Thumbs.db
+.DS_Store

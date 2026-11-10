@@ -12,6 +12,9 @@ vi.mock('../../api/authApi.js', () => ({
   getCurrentUser: vi.fn(),
   logout: vi.fn(),
   changePassword: vi.fn(),
+  forgotPassword: vi.fn(),
+  verifyResetOtp: vi.fn(),
+  resetPassword: vi.fn(),
 }))
 
 vi.mock('../../api/dashboardApi.js', () => ({
@@ -21,9 +24,9 @@ vi.mock('../../api/dashboardApi.js', () => ({
 }))
 
 const users = {
-  HR: { id: 1, email: 'hr@example.test', role: 'HR' },
-  MANAGER: { id: 2, email: 'manager@example.test', role: 'MANAGER' },
-  EMPLOYEE: { id: 3, email: 'employee@example.test', role: 'EMPLOYEE' },
+  HR: { id: 1, email: 'hr@example.test', role: 'HR', fullName: 'Hana Reed' },
+  MANAGER: { id: 2, email: 'manager@example.test', role: 'MANAGER', fullName: 'Mona Boss' },
+  EMPLOYEE: { id: 3, email: 'employee@example.test', role: 'EMPLOYEE', fullName: 'Asha Rao' },
 }
 
 const hrData = {
@@ -47,9 +50,9 @@ const managerData = {
   publishedResults: 4,
 }
 
-function renderApp(path, role) {
+function renderApp(path, role, user = users[role]) {
   localStorage.setItem(TOKEN_STORAGE_KEY, 'dashboard.jwt')
-  authApi.getCurrentUser.mockResolvedValue(users[role])
+  authApi.getCurrentUser.mockResolvedValue(user)
   return render(
     <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
@@ -130,5 +133,54 @@ describe('role dashboards', () => {
 
     expect(await screen.findByText('No reporting manager is currently assigned to you.'))
       .toBeTruthy()
+  })
+
+  it.each([
+    ['HR', '/hr/dashboard', 'Hana Reed'],
+    ['MANAGER', '/manager/dashboard', 'Mona Boss'],
+    ['EMPLOYEE', '/employee/dashboard', 'Asha Rao'],
+  ])('greets %s users with their authenticated name', async (role, path, name) => {
+    if (role === 'EMPLOYEE') {
+      dashboardApi.getEmployeeDashboard.mockResolvedValue({
+        currentCycle: null,
+        latestPublishedResult: null,
+        reportingManager: null,
+      })
+    }
+    renderApp(path, role)
+
+    expect(await screen.findByText(`Hi, ${name}!`)).toBeTruthy()
+  })
+
+  it('falls back to a neutral greeting when the profile name is blank', async () => {
+    dashboardApi.getEmployeeDashboard.mockResolvedValue({
+      currentCycle: null,
+      latestPublishedResult: null,
+      reportingManager: null,
+    })
+    renderApp('/employee/dashboard', 'EMPLOYEE', {
+      ...users.EMPLOYEE,
+      fullName: '   ',
+    })
+
+    expect(await screen.findByText('Hi, there!')).toBeTruthy()
+  })
+
+  it.each([
+    ['HR', '/hr/dashboard'],
+    ['MANAGER', '/manager/dashboard'],
+    ['EMPLOYEE', '/employee/dashboard'],
+  ])('offers a working Change password link for %s users', async (role, path) => {
+    if (role === 'EMPLOYEE') {
+      dashboardApi.getEmployeeDashboard.mockResolvedValue({
+        currentCycle: null,
+        latestPublishedResult: null,
+        reportingManager: null,
+      })
+    }
+    renderApp(path, role)
+
+    const link = await screen.findByRole('link', { name: 'Change password' })
+    expect(link.getAttribute('href')).toBe('/change-password')
   })
 })

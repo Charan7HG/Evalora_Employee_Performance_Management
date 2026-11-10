@@ -18,7 +18,7 @@ Related: `docs/SETUP_GUIDE.md` (local development) and `docs/GITHUB_PREPARATION_
 | `DB_USERNAME` | Yes | Database user. |
 | `DB_PASSWORD` | Yes | Database password. Store only in the platform's secret manager. |
 | `JWT_SECRET` | Yes | HMAC signing secret, at least 32 bytes of UTF-8. Generate per environment; never reuse a local value. |
-| `SPRING_PROFILES_ACTIVE` | Yes in production | Must be a non-`dev` value (for example `prod`). `dev` enables the HR bootstrap and the development password reset. |
+| `SPRING_PROFILES_ACTIVE` | Yes in production | Must be a non-`dev` value. Use `prod,gmail` for Gmail SMTP or `prod` alone for Brevo. `dev` enables the HR bootstrap and the development password reset. |
 
 ### Backend (optional)
 
@@ -27,7 +27,19 @@ Related: `docs/SETUP_GUIDE.md` (local development) and `docs/GITHUB_PREPARATION_
 | `PORT` | `8080` | HTTP port. Render injects this automatically; `server.port=${PORT:8080}` reads it. |
 | `JWT_EXPIRATION` | `28800000` | Token lifetime in milliseconds (8 hours). |
 | `MIGRATIONS_LOCATION` | `filesystem:../database/migrations` | Flyway location. Use `classpath:db/migration` for the copy packaged in the jar, or `filesystem:/abs/path` for an external folder. |
-| `EVALORA_CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Comma-separated browser origins allowed to call the API. Wildcards are rejected. |
+| `EVALORA_CORS_ALLOWED_ORIGINS` | `http://localhost:5173` in development | Comma-separated browser origins allowed to call the API. Wildcards are rejected. The backend checks that this list includes the origin in `EVALORA_FRONTEND_URL`. Production Docker Compose requires an explicit value. |
+| `EVALORA_FRONTEND_URL` | `http://localhost:5173` in development | Base URL used to build emailed activation links (`.../activate?token=...`). It must be an absolute `http`/`https` URL reachable from the device opening the email. Production startup requires an explicit valid value; never use localhost in production. |
+| `EVALORA_EMAIL_ENABLED` | `false` | Enables the configured email provider. |
+| `EVALORA_SMTP_HOST` | `smtp.gmail.com` | Gmail SMTP host (used only with the `gmail` profile). |
+| `EVALORA_SMTP_PORT` | `587` | Gmail SMTP port; STARTTLS is required. |
+| `EVALORA_SMTP_USERNAME` | empty | Gmail account that sends notifications. |
+| `EVALORA_SMTP_PASSWORD` | empty | Google App Password for that account. Store only in the platform secret manager. |
+| `BREVO_API_KEY` | empty | Brevo API key, used only with `prod` and no `gmail` profile. |
+| `EVALORA_MAIL_FROM_ADDRESS` | `evalora@evalora.local` | Sender email address. For Gmail it must match the authenticated account. |
+| `EVALORA_MAIL_FROM_NAME` | `Evalora` | Sender display name. |
+| `EVALORA_OTP_PEPPER` | empty | HMAC-SHA256 pepper for OTP hashing. Required outside `dev`; the backend refuses to start without it. |
+| `EVALORA_OTP_MAX_ATTEMPTS` | `5` | Maximum OTP requests per email per 15-minute window. |
+| `EVALORA_OTP_RESEND_COOLDOWN` | `60` | Resend cooldown in seconds. |
 | `EVALORA_BOOTSTRAP_HR_*` | empty | **Dev profile only.** Not needed in production. |
 | `EVALORA_DEV_RESET_EMAIL` | empty | **Dev profile only.** Not needed in production. |
 
@@ -49,6 +61,11 @@ Related: `docs/SETUP_GUIDE.md` (local development) and `docs/GITHUB_PREPARATION_
 - Production **must** set `SPRING_PROFILES_ACTIVE=prod` (or another non-`dev` value).
 - `BootstrapHrSeeder` and `DevPasswordResetController` are `@Profile("dev")`, so they do not exist under `prod`.
 - The tests `BootstrapHrSeederNotDevIntegrationTest` and `BootstrapHrSeederDevIntegrationTest` prove this behavior.
+- Email provider selection is mutually exclusive:
+  - `prod,gmail` → `GmailEmailService` (SMTP with a Google App Password).
+  - `prod` (without `gmail`) → `BrevoEmailService`.
+  - `e2e-capture` → `E2eCaptureEmailService`, unchanged and never Gmail.
+  - `dev` → the existing provider (Brevo unless `gmail` is added).
 
 ---
 
@@ -59,6 +76,61 @@ Related: `docs/SETUP_GUIDE.md` (local development) and `docs/GITHUB_PREPARATION_
 - Multiple origins are comma-separated: `https://app.example.com,https://admin.example.com`.
 - `*` and wildcard patterns such as `https://*.example.com` are rejected at startup.
 - Credentials are disabled; the JWT travels in the `Authorization` header, not a cookie.
+
+---
+
+### 3.1 Activation links and testing from a phone (LAN)
+
+Activation emails contain a link built from `EVALORA_FRONTEND_URL`, not from the
+request host. The value must therefore be an origin the **recipient's device**
+can reach:
+
+- **Same laptop** — the default `http://localhost:5173` is fine.
+- **Phone on the same Wi-Fi** — `localhost` resolves to the phone itself and will
+  fail. Set the laptop's LAN IPv4 address instead, and allow the same origin in
+  CORS:
+  ```dotenv
+  EVALORA_FRONTEND_URL=http://192.168.x.x:5173
+  EVALORA_CORS_ALLOWED_ORIGINS=http://192.168.x.x:5173
+  ```
+  Find the address with `ipconfig` (the IPv4 address of the active Wi-Fi adapter).
+  Start Vite with `npm run dev -- --host` so it listens on the LAN, not only on
+  loopback. When using Vite rather than the Compose/Nginx frontend, configure
+  `VITE_API_BASE_URL=http://<laptop-ipv4>:8080/api` before starting Vite, and
+  ensure the backend port is reachable on the laptop. The Compose/Nginx
+  frontend uses its same-origin `/api` proxy instead.
+- **Windows Firewall** — the first time Vite/Node listens on a LAN address,
+  Windows may block inbound connections. Allow Node.js on **Private networks**
+  (Windows Defender Firewall → Allow an app through firewall), or add an inbound
+  rule for TCP 5173. Never open the port to public networks for this.
+- The CORS origin and the activation-link origin must be identical; otherwise the
+  page loads but its API calls are rejected.
+- Use the frontend at the origin root. The link builder preserves a path prefix
+  in generated URLs, but the current React router and Nginx configuration are
+  root-mounted and do not support hosting Evalora under a context path.
+
+### 3.2 Public deployment
+
+For real users, set both values to the public HTTPS frontend origin, for example
+`https://app.example.com`. Never ship `localhost` or a LAN address to production,
+because recipients on other networks cannot reach it. Keep the frontend and API
+on HTTPS; the activation token travels in the query string and must not be sent
+over plain HTTP.
+
+### 3.3 Email deliverability (SPF, DKIM, DMARC)
+
+Activation and password-reset emails are sent by the configured provider. To keep
+them out of spam and make links trustworthy:
+
+- **SPF** — publish a TXT record on the sending domain that authorizes the
+  provider (e.g. `v=spf1 include:_spf.google.com ~all` for Gmail, or the Brevo
+  include). Only one SPF record per domain.
+- **DKIM** — enable signing in the provider and publish the DKIM TXT record it
+  generates under `selector._domainkey`.
+- **DMARC** — start with `v=DMARC1; p=none; rua=mailto:dmarc@example.com` to
+  collect reports, then move to `quarantine`/`reject` once alignment is verified.
+- The `EVALORA_MAIL_FROM_ADDRESS` domain must match the authenticated sender and
+  the SPF/DKIM domain, or deliverability suffers.
 
 ---
 
@@ -74,7 +146,7 @@ Related: `docs/SETUP_GUIDE.md` (local development) and `docs/GITHUB_PREPARATION_
 
 ## 5. Flyway migrations
 
-- Canonical SQL lives in `database/migrations` (`V1`–`V5`).
+- Canonical SQL lives in `database/migrations` (`V1`–`V7`).
 - The Maven build copies `database/migrations/*.sql` to `db/migration` inside the jar.
 - Local default: `filesystem:../database/migrations` (run from `backend/`).
 - Container/Render: set `MIGRATIONS_LOCATION=classpath:db/migration` to use the packaged copy, or mount an external
@@ -87,7 +159,7 @@ Related: `docs/SETUP_GUIDE.md` (local development) and `docs/GITHUB_PREPARATION_
 
 ## 6. Docker requirements
 
-When the Dockerfile is added:
+The repository Dockerfiles follow these rules:
 
 1. Use a Java **21** base image (`eclipse-temurin:21-jre`).
 2. Build with the Maven wrapper and JDK 21.

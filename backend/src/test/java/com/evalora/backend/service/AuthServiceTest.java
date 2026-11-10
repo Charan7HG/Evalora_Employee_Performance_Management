@@ -1,8 +1,10 @@
 package com.evalora.backend.service;
 
 import com.evalora.backend.dto.LoginResponse;
+import com.evalora.backend.entity.Employee;
 import com.evalora.backend.entity.User;
 import com.evalora.backend.entity.enums.Role;
+import com.evalora.backend.repository.EmployeeRepository;
 import com.evalora.backend.repository.UserRepository;
 import com.evalora.backend.security.JwtProperties;
 import com.evalora.backend.security.JwtService;
@@ -34,6 +36,7 @@ class AuthServiceTest {
     private static final String TOKEN = "signed.jwt.token";
 
     private UserRepository userRepository;
+    private EmployeeRepository employeeRepository;
     private PasswordEncoder passwordEncoder;
     private JwtService jwtService;
     private JwtProperties jwtProperties;
@@ -42,11 +45,13 @@ class AuthServiceTest {
     @BeforeEach
     void setUp() {
         userRepository = mock(UserRepository.class);
+        employeeRepository = mock(EmployeeRepository.class);
         passwordEncoder = mock(PasswordEncoder.class);
         jwtService = mock(JwtService.class);
         jwtProperties = new JwtProperties();
         jwtProperties.setExpirationMs(28_800_000L);
-        authService = new AuthService(userRepository, passwordEncoder, jwtService, jwtProperties);
+        authService = new AuthService(userRepository, employeeRepository,
+                passwordEncoder, jwtService, jwtProperties);
     }
 
     // ------------------------------------------------------------------ success
@@ -69,6 +74,38 @@ class AuthServiceTest {
         assertThat(response.user().id()).isEqualTo(1L);
         assertThat(response.user().email()).isEqualTo(EMAIL);
         assertThat(response.user().role()).isEqualTo("EMPLOYEE");
+    }
+
+    @Test
+    void successfulLoginIncludesTheEmployeeProfileFullName() {
+        User user = user(0, null);
+        Employee profile = new Employee();
+        profile.setFullName("  Asha Rao  ");
+        when(userRepository.findByEmailForUpdate(EMAIL)).thenReturn(Optional.of(user));
+        when(employeeRepository.findByUser_Id(1L)).thenReturn(Optional.of(profile));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(jwtService.generateToken(user)).thenReturn(TOKEN);
+
+        LoginResult result = authService.login(EMAIL, PASSWORD);
+
+        assertThat(result.response().user().fullName()).isEqualTo("Asha Rao");
+    }
+
+    @Test
+    void currentUserReturnsTheProfileFullNameAndNoSensitiveFields() {
+        User user = user(0, null);
+        Employee profile = new Employee();
+        profile.setFullName("Asha Rao");
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(employeeRepository.findByUser_Id(1L)).thenReturn(Optional.of(profile));
+
+        var current = authService.currentUser(1L);
+
+        assertThat(current).isNotNull();
+        assertThat(current.id()).isEqualTo(1L);
+        assertThat(current.email()).isEqualTo(EMAIL);
+        assertThat(current.role()).isEqualTo("EMPLOYEE");
+        assertThat(current.fullName()).isEqualTo("Asha Rao");
     }
 
     @Test

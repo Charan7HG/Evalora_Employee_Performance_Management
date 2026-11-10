@@ -1,0 +1,103 @@
+# =============================================================================
+# Evalora - local Docker Compose stack
+#
+# Run from the repository root:
+#   docker compose --env-file deploy/.env.docker up --build
+#
+# Compose variables come ONLY from the explicitly supplied env file. The root
+# .env is never referenced.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-evalora}
+      POSTGRES_USER: "${DB_USERNAME:?Set DB_USERNAME in deploy/.env.docker}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env.docker}"
+    volumes:
+      # Named volume so data survives container recreation.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # $$ escapes Compose interpolation; the shell expands the variables.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Spring Boot backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      # Repository root is required: the build packages database/migrations.
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Gmail SMTP is the production provider. Removing `gmail` falls back to
+      # Brevo (profile `prod` alone); the E2E override supplies e2e-capture.
+      SPRING_PROFILES_ACTIVE: prod,gmail
+      DB_URL: "jdbc:postgresql://postgres:5432/${DB_NAME:-evalora}"
+      DB_USERNAME: "${DB_USERNAME:?Set DB_USERNAME in deploy/.env.docker}"
+      DB_PASSWORD: "${DB_PASSWORD:?Set DB_PASSWORD in deploy/.env.docker}"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in deploy/.env.docker}"
+      MIGRATIONS_LOCATION: classpath:db/migration
+      PORT: "8080"
+      # Email delivery is opt-in. The App Password is supplied only through the
+      # local deploy/.env.docker file and is never written into this file.
+      EVALORA_EMAIL_ENABLED: "${EVALORA_EMAIL_ENABLED:-false}"
+      EVALORA_SMTP_HOST: "${EVALORA_SMTP_HOST:-smtp.gmail.com}"
+      EVALORA_SMTP_PORT: "${EVALORA_SMTP_PORT:-587}"
+      EVALORA_SMTP_USERNAME: "${EVALORA_SMTP_USERNAME:-}"
+      EVALORA_SMTP_PASSWORD: "${EVALORA_SMTP_PASSWORD:-}"
+      EVALORA_FRONTEND_URL: "${EVALORA_FRONTEND_URL:?Set EVALORA_FRONTEND_URL in deploy/.env.docker}"
+      # Must list the browser origin(s) that actually load the frontend. For
+      # temporary phone testing over the laptop's LAN address, set both this
+      # and EVALORA_FRONTEND_URL to the same http://<laptop-ipv4>:5173 value.
+      EVALORA_CORS_ALLOWED_ORIGINS: "${EVALORA_CORS_ALLOWED_ORIGINS:?Set EVALORA_CORS_ALLOWED_ORIGINS in deploy/.env.docker}"
+      # Brevo is kept for the `prod` (non-gmail) profile. It is unused while the
+      # `gmail` profile is active.
+      BREVO_API_KEY: "${EVALORA_BREVO_API_KEY:-}"
+      # Must match the authenticated Gmail account when `gmail` is active. The
+      # default matches application.properties; set the real address in
+      # deploy/.env.docker (see deploy/.env.docker.example).
+      EVALORA_MAIL_FROM_ADDRESS: "${EVALORA_MAIL_FROM_ADDRESS:-evalora@evalora.local}"
+      EVALORA_MAIL_FROM_NAME: "${EVALORA_MAIL_FROM_NAME:-Evalora}"
+      # Required outside local development. No default is provided: the
+      # backend refuses to start when this is empty, so a deployment can never
+      # silently share a publicly known pepper.
+      EVALORA_OTP_PEPPER: "${EVALORA_OTP_PEPPER:-}"
+      EVALORA_OTP_MAX_ATTEMPTS: "${EVALORA_OTP_MAX_ATTEMPTS:-5}"
+      EVALORA_OTP_RESEND_COOLDOWN: "${EVALORA_OTP_RESEND_COOLDOWN:-60}"
+    ports:
+      # Exposed for local API and Swagger testing.
+      - "8080:8080"
+
+  # ---------------------------------------------------------------------------
+  # React frontend served by Nginx
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Vite inlines this at build time; Nginx proxies /api to the backend.
+        VITE_API_BASE_URL: /api
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:80"
+
+volumes:
+  postgres_data:

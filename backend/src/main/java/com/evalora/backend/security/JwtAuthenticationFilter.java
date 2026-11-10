@@ -23,9 +23,11 @@ import java.time.Instant;
  * context.
  *
  * <p>Everything that matters is re-read from the database on every request:
- * the role, {@code enabled} and {@code locked_until}. The role claim inside the
- * token is never used for authorization, so a role change or a disabled account
- * takes effect immediately.</p>
+ * the role, {@code enabled}, {@code locked_until} and {@code token_version}.
+ * The role claim inside the token is never used for authorization, so a role
+ * change or a disabled account takes effect immediately. A token whose version
+ * is older than the account's current version is rejected, which invalidates
+ * every session after a password change.</p>
  *
  * <p>When the token is missing the filter simply continues; the request then
  * reaches the entry point and gets a 401 if the endpoint is protected. When the
@@ -68,6 +70,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             } else if (!user.isEnabled() || isLocked(user)) {
                 SecurityContextHolder.clearContext();
                 request.setAttribute(SecurityErrorWriter.ERROR_ATTRIBUTE, SecurityErrorWriter.ACCOUNT_UNAVAILABLE);
+            } else if (jwtService.extractTokenVersion(token) != user.getTokenVersion()) {
+                // A password change bumps the account's token version, which
+                // invalidates every token issued before the change.
+                SecurityContextHolder.clearContext();
+                request.setAttribute(SecurityErrorWriter.ERROR_ATTRIBUTE, SecurityErrorWriter.INVALID_TOKEN);
             } else {
                 EvaloraPrincipal principal = EvaloraPrincipal.from(user);
                 UsernamePasswordAuthenticationToken authentication =

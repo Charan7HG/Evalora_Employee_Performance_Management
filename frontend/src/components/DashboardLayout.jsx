@@ -28,6 +28,7 @@ export default function DashboardLayout({ children }) {
               { label: 'Results', path: '/manager/results' },
             ]
           : []),
+    { label: 'Change password', path: '/change-password' },
   ]
 
   return (
